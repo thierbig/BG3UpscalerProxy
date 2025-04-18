@@ -2,6 +2,10 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/thierbig/bg3upscalerproxy)](https://github.com/thierbig/bg3upscalerproxy/releases)
 
+## Quick Download
+
+**[Download Latest Release Here](https://github.com/thierbig/bg3upscalerproxy/releases/latest)**
+
 A proxy DLL that enables compatibility between Baldur's Gate 3 upscaler (DLSS) and Script Extender. Consequently, other mods requiring SE such as Mod Configuration Menu (MCM) will become usable.
 
 ## Overview
@@ -12,7 +16,6 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 
 ### DLSS Upscaler and Script Extender Working Together (check edge of screen for DLSS versions and FG versions)
 ![DLSS Upscaler](https://i.imgur.com/oYepB8y.png)
-
 ### Mod Configuration Menu (requires Script Extender) Working with Upscaler
 ![MCM Working](https://i.imgur.com/7x0odxY.png)
 
