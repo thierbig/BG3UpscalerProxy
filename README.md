@@ -28,6 +28,7 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 - You must purchase the original BG3 upscaler injection from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
 - You need the [BG3 Script Extender](https://github.com/Norbyte/bg3se) installed
 - This only works with Baldur's Gate 3 on PC
+- When using the modified mods files with DLSS4, you **must** use Vulkan rendering mode (not DX11)
 
 ## Installation
 
@@ -41,6 +42,10 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 This version offers these improvements:
 - DLSS 4 instead of DLSS 3 (better performance and visual quality)
 - Access to Multi-Frame Generation (MFG) in addition to Frame Generation (FG)
+
+**Important:** 
+- The modified mods files can **ONLY** be used with Vulkan as DX11 does not support DLSS4
+- This project has been tested exclusively with Vulkan
 
 **Note:** You still need to purchase PureDark's plugin for authentication.
 
