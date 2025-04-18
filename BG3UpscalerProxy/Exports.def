@@ -1,0 +1,4 @@
+LIBRARY DWrite
+
+EXPORTS
+    DWriteCreateFactory @1
