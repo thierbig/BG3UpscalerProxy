@@ -14,10 +14,8 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 
 ## Screenshots
 
-### DLSS Upscaler and Script Extender Working Together (check edge of screen for DLSS versions and FG versions)
-![DLSS Upscaler](https://i.imgur.com/oYepB8y.png)
-### Mod Configuration Menu (requires Script Extender) Working with Upscaler
-![MCM Working](https://i.imgur.com/7x0odxY.png)
+### Mod Configuration Menu (requires Script Extender) Working with Upscaler(top-left corner)
+![MCM Working](https://i.imgur.com/yFvsLKO.png)
 
 ## Features
 
