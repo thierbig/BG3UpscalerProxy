@@ -11,10 +11,10 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 ## Screenshots
 
 ### DLSS Upscaler and Script Extender Working Together (check edge of screen for DLSS versions and FG versions)
-![DLSS Upscaler](https://i.imgur.com/YnhJZUj.png)
+![DLSS Upscaler](https://i.imgur.com/oYepB8y.png)
 
 ### Mod Configuration Menu (requires Script Extender) Working with Upscaler
-![MCM Working](https://i.imgur.com/OHn8rZs.png)
+![MCM Working](https://i.imgur.com/7x0odxY.png)
 
 ## Features
 
@@ -57,4 +57,4 @@ If you experience any issues:
 
 ## License
 
-This project is provided as-is with no warranty. Use at your own risk.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
