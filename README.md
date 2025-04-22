@@ -64,6 +64,12 @@ If you experience any issues:
 2. Ensure you've properly renamed the original Script Extender DLL to `ScriptExtender.dll`
 3. Verify that your GPU supports the upscaler features you're trying to use
 
+### For Persistent Crashing Issues
+
+1. Try deleting the `BG3ScriptExtender` folder in `%AppData%/Local` so the Script Extender can rebuild itself
+2. If deleting the folder doesn't work, try setting `Manifest-Release.json` to read-only
+3. Please report back if these solutions work for you, as they could be automated in future updates
+
 ## Credits
 
 - Original upscaler injection by [PureDark](https://www.patreon.com/pureDark)
