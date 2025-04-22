@@ -20,7 +20,9 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 ## Features
 
 - Enables simultaneous use of upscaler, Script Extender, and other mods requiring SE such as Mod Configuration Menu
-- Properly sequences the loading of components to avoid crashes and conflicts
+- Works with both DLSS or FSR3
+- The proxy is compatible with both DX11 and Vulkan
+- Script Extender auto updater works
 - Detailed logging for troubleshooting in the `UpscalerProxy.log` file
 
 ## Prerequisites
@@ -28,7 +30,6 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 - You must purchase the original BG3 upscaler injection from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
 - You need the [BG3 Script Extender](https://github.com/Norbyte/bg3se) installed
 - This only works with Baldur's Gate 3 on PC
-- The proxy is compatible with both DX11 and Vulkan
 - When using the modified mods files with DLSS4, you **must** use Vulkan rendering mode (not DX11)
 
 ## Installation
