@@ -63,6 +63,8 @@ If you experience any issues:
 1. Check the `UpscalerProxy.log` file in your `mods` folder for error messages
 2. Ensure you've properly renamed the original Script Extender DLL to `ScriptExtender.dll`
 3. Verify that your GPU supports the upscaler features you're trying to use
+4. If you're experiencing launching issues, try using `DWrite_alternate.dll` instead. This version uses different thread handling which may help with lower-end systems.
+
 
 ### For Persistent Crashing Issues
 
