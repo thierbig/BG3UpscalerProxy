@@ -13,7 +13,9 @@ const wchar_t* UPSCALER_LOG_FILES[] = {
     L"BG3Upscaler.log"
 };
 const char* UPSCALER_SUCCESS_STRINGS[] = {
-    "[info] hk_vkCreateDevice"
+    "hk_vkCreateDevice",
+    "D3D11CreateDevice",
+    "DX11WrapperForDX12 Resource Created"
 };
      
 HMODULE g_scriptExtenderDll = NULL;

@@ -6,11 +6,11 @@
 
 **[Download Latest Release Here](https://github.com/thierbig/bg3upscalerproxy/releases/latest)**
 
-A proxy DLL that enables compatibility between Baldur's Gate 3 upscaler (DLSS) and Script Extender. Consequently, other mods requiring SE such as Mod Configuration Menu (MCM) will become usable.
+A proxy DLL that enables compatibility between Baldur's Gate 3 upscalers (DLSS, FSR3) and Script Extender. Consequently, other mods requiring SE such as Mod Configuration Menu (MCM) will become usable.
 
 ## Overview
 
-This proxy DLL solves compatibility issues between upscaler injections and the BG3 Script Extender by acting as an intermediary loader that ensures proper initialization order. It allows you to enjoy enhanced graphics with DLSS upscaling while still being able to use Script Extender mods.
+This proxy DLL solves compatibility issues between upscaler injections and the BG3 Script Extender by acting as an intermediary loader that ensures proper initialization order. It allows you to enjoy enhanced graphics with DLSS or FSR3 upscaling while still being able to use Script Extender mods.
 
 ## Screenshots
 
@@ -28,6 +28,7 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 - You must purchase the original BG3 upscaler injection from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
 - You need the [BG3 Script Extender](https://github.com/Norbyte/bg3se) installed
 - This only works with Baldur's Gate 3 on PC
+- The proxy is compatible with both DX11 and Vulkan
 - When using the modified mods files with DLSS4, you **must** use Vulkan rendering mode (not DX11)
 
 ## Installation
@@ -44,10 +45,16 @@ This version offers these improvements:
 - Access to Multi-Frame Generation (MFG) in addition to Frame Generation (FG)
 
 **Important:** 
-- The modified mods files can **ONLY** be used with Vulkan as DX11 does not support DLSS4
-- This project has been tested exclusively with Vulkan
+- The modified mods files are designed for Nvidia GPUs series 4000/5000 because of DLSS4 MFG support
+- These modified mods files can **ONLY** be used with Vulkan as DX11 does not support DLSS4
+- FSR3 is untested and should only work with DX11 and with the original PureDark's mods file
 
 **Note:** You still need to purchase PureDark's plugin for authentication.
+
+## Known Issues
+
+- **MCM Menu Not Appearing Correctly**: The Mod Configuration Menu may not pop up correctly when using this proxy. Workaround: Set your MCM settings before installing this mod, then reload your game with this mod installed.
+- **Save File Images Not Rendering Correctly**: In-game save file images may not be properly rendered. This is only a visual issue and does not affect functionality.
 
 ## Troubleshooting
 
