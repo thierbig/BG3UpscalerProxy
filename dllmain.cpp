@@ -12,11 +12,13 @@
 const wchar_t* UPSCALER_LOG_FILES[] = {
     L"BG3Upscaler.log"
 };
+const wchar_t* DLSS_LOG_FILE = L"dlssg_to_fsr3.log";
 const char* UPSCALER_SUCCESS_STRINGS[] = {
     "hk_vkCreateDevice",
     "D3D11CreateDevice",
     "DX11WrapperForDX12 Resource Created"
 };
+const char* DLSS_SUCCESS_STRING = "NVSDK_NGX_D3D12_CreateFeature: Succeeded.";
      
 HMODULE g_scriptExtenderDll = NULL;
 
@@ -26,6 +28,9 @@ std::ofstream g_logFile;
 HANDLE g_mainThreadHandle = NULL;
 bool g_gameNeedsSuspend = false;
 
+// Event for thread synchronization instead of hard suspending
+HANDLE g_syncEvent = NULL;
+
 // Exported function pointers from the script extender
 typedef HRESULT(WINAPI* DWriteCreateFactoryFunc)(int factoryType, REFIID iid, IUnknown** factory);
 DWriteCreateFactoryFunc g_originalDWriteCreateFactory = NULL;
@@ -34,8 +39,6 @@ std::wstring GetDllDirectory()
 {
     wchar_t dllPath[MAX_PATH];
     GetModuleFileNameW(GetModuleHandleA("DWrite.dll"), dllPath, MAX_PATH);
-    
-    // Find the last backslash
     wchar_t* lastSlash = wcsrchr(dllPath, L'\\');
     if (lastSlash)
     {
@@ -101,6 +104,11 @@ bool CheckUpscalerLogs(const std::wstring& modsFolder, int maxWaitTimeMs = 60000
     auto startTime = high_resolution_clock::now();
     bool logFound = false;
     bool hookConfirmed = false;
+    bool dlssLogFound = false;
+    bool dlssHookConfirmed = false;
+    
+    // Extract the bin folder path (parent of modsFolder)
+    std::wstring binFolder = GetDllDirectory();
     
     LogMessage("Checking for upscaler log files...\n");
     
@@ -116,48 +124,107 @@ bool CheckUpscalerLogs(const std::wstring& modsFolder, int maxWaitTimeMs = 60000
                 logFound = true;
                 LogMessage("Found log file: %ls\n", logFile);
                 
-                                // Check for success strings in the log file
-                std::string line;
-                int logLines = 0;
-                while (std::getline(file, line))
+                // Once we found the BG3Upscaler.log, check if DLSS log file exists
+                std::wstring dlssLogPath = binFolder + DLSS_LOG_FILE;
+                std::ifstream dlssFile(dlssLogPath);
+                
+                if (dlssFile.is_open())
                 {
-                    // Log each line we read for debugging
-                    logLines++;
-                    LogMessage("Read log line %d: %s\n", logLines, line.c_str());
+                    // DLSS log file exists, prioritize checking this instead
+                    dlssLogFound = true;
+                    LogMessage("Found DLSS log file: %ls\n", DLSS_LOG_FILE);
                     
-                    for (const char* successString : UPSCALER_SUCCESS_STRINGS)
+                    // Check for success string in the DLSS log file
+                    std::string dlssLine;
+                    int dlssLogLines = 0;
+                    
+                    while (std::getline(dlssFile, dlssLine))
                     {
-                        if (line.find(successString) != std::string::npos)
+                        dlssLogLines++;
+                        LogMessage("Read DLSS log line %d: %s\n", dlssLogLines, dlssLine.c_str());
+                        
+                        if (dlssLine.find(DLSS_SUCCESS_STRING) != std::string::npos)
                         {
-                            LogMessage("Found success indicator in log: %s\n", line.c_str());
-                            hookConfirmed = true;
+                            LogMessage("Found DLSS success indicator in log: %s\n", dlssLine.c_str());
+                            dlssHookConfirmed = true;
                             break;
                         }
                     }
                     
-                    if (hookConfirmed) break;
+                    dlssFile.close();
+                    
+                    // If DLSS hook is confirmed, we can proceed
+                    if (dlssHookConfirmed)
+                    {
+                        LogMessage("DLSS hook confirmation found!\n");
+                        file.close();
+                        return true;
+                    }
+                    
+                    // If DLSS log exists but hook not confirmed, still check the original log
+                    LogMessage("DLSS log file found but no hook confirmation. Will also check original log.\n");
+                }
+                
+                // Only check the original log if DLSS log doesn't exist or if DLSS hook was not confirmed
+                if (!dlssLogFound || !dlssHookConfirmed)
+                {
+                    // Check for success strings in the BG3Upscaler log file
+                    std::string line;
+                    int logLines = 0;
+                    
+                    // Rewind the file to the beginning since we might have read some already
+                    file.clear();
+                    file.seekg(0, std::ios::beg);
+                    
+                    while (std::getline(file, line))
+                    {
+                        logLines++;
+                        LogMessage("Read log line %d: %s\n", logLines, line.c_str());
+                        
+                        for (const char* successString : UPSCALER_SUCCESS_STRINGS)
+                        {
+                            if (line.find(successString) != std::string::npos)
+                            {
+                                LogMessage("Found success indicator in log: %s\n", line.c_str());
+                                hookConfirmed = true;
+                                break;
+                            }
+                        }
+                        
+                        if (hookConfirmed) break;
+                    }
                 }
                 
                 file.close();
                 
+                // If we found confirmation in the original log, proceed
                 if (hookConfirmed)
                 {
-                    LogMessage("Upscaler hook confirmation found in logs!\n");
+                    LogMessage("Upscaler hook confirmation found in original log!\n");
                     return true;
                 }
             }
         }
         
-        if (logFound && !hookConfirmed)
+        // At this point, we've checked both logs but haven't found confirmation
+        if (logFound)
         {
-            // If we found a log but no confirmation yet, wait a bit and try again
-            LogMessage("Log file found but no hook confirmation yet, waiting... (Thread ID: %d)\n", GetCurrentThreadId());
-            std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Wait longer between checks
+            if (dlssLogFound)
+            {
+                // If both logs found but no confirmation yet
+                LogMessage("Both log files found but no hook confirmation yet, waiting... (Thread ID: %d)\n", GetCurrentThreadId());
+            }
+            else
+            {
+                // If only original log found but no confirmation yet
+                LogMessage("Original log file found but no hook confirmation yet, waiting... (Thread ID: %d)\n", GetCurrentThreadId());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Wait before checking again
         }
-        else if (!logFound)
+        else
         {
-            // If no log file found yet, wait a bit longer
-            LogMessage("No log file found yet, waiting... (Thread ID: %d)\n", GetCurrentThreadId());
+            // If no logs found yet
+            LogMessage("No log files found yet, waiting... (Thread ID: %d)\n", GetCurrentThreadId());
             std::this_thread::sleep_for(std::chrono::milliseconds(1000)); // Wait longer between checks
         }
     }
@@ -165,7 +232,14 @@ bool CheckUpscalerLogs(const std::wstring& modsFolder, int maxWaitTimeMs = 60000
     // If we get here, we've waited the maximum time but didn't find confirmation
     if (logFound)
     {
-        LogMessage("WARNING: Found log file(s) but could not confirm upscaler hooks. Proceeding anyway.\n");
+        if (dlssLogFound)
+        {
+            LogMessage("WARNING: Found both log files but could not confirm hooks. Proceeding anyway.\n");
+        }
+        else
+        {
+            LogMessage("WARNING: Found original log file but could not confirm upscaler hooks. Proceeding anyway.\n");
+        }
         return true; // Return true anyway since we at least found a log file
     }
     else
@@ -178,7 +252,6 @@ bool CheckUpscalerLogs(const std::wstring& modsFolder, int maxWaitTimeMs = 60000
 // The main updater thread that runs in background
 DWORD WINAPI UpdaterThread(LPVOID param)
 {
-    // Critical - log that thread is starting to verify it's running
     LogMessage("Updater thread started. Thread ID: %d\n", GetCurrentThreadId());
     
     std::wstring dllDir = GetDllDirectory();
@@ -189,29 +262,33 @@ DWORD WINAPI UpdaterThread(LPVOID param)
     LogMessage("Waiting for upscaler initialization...\n");
     
     // We don't proceed unless we definitively confirm upscaler is hooked
-    bool upscalerInitialized = CheckUpscalerLogs(modsFolder, 30000);  // Wait up to 30 seconds
+    bool upscalerInitialized = CheckUpscalerLogs(modsFolder, 30000);
     
     if (upscalerInitialized)
     {
         LogMessage("Upscaler initialization confirmed! Safe to load Script Extender.\n");
         
-        // Now that upscaler is confirmed initialized, suspend the game thread briefly
-        LogMessage("Suspending game thread to load Script Extender...\n");
-        if (g_mainThreadHandle != NULL) {
-            DWORD suspendCount = SuspendThread(g_mainThreadHandle);
-            LogMessage("Game thread suspended. Suspend count: %d\n", suspendCount);
+        // Use event-based synchronization instead of thread suspension
+        LogMessage("Requesting sync window to load Script Extender...\n");
+        if (g_syncEvent != NULL) {
+            // Reset the event to non-signaled state
+            ResetEvent(g_syncEvent);
+            LogMessage("Synchronization event reset, main thread should yield\n");
+            
+            // Wait a short time to ensure the main thread has a chance to yield
+            Sleep(50);
         }
         
-        // Load the script extender while game is suspended
+        // Load the script extender during synchronization window
         LogMessage("Loading script extender...\n");
         g_scriptExtenderDll = LoadLibraryW(scriptExtenderPath.c_str());
         if (!g_scriptExtenderDll)
         {
             LogMessage("Failed to load script extender DLL. Error code: %d\n", GetLastError());
-            // Resume the game despite error
-            if (g_mainThreadHandle != NULL) {
-                ResumeThread(g_mainThreadHandle);
-                LogMessage("Game thread resumed after error\n");
+            // Signal event to let the game continue despite error
+            if (g_syncEvent != NULL) {
+                SetEvent(g_syncEvent);
+                LogMessage("Synchronization event signaled after error\n");
             }
             return 1;
         }
@@ -222,10 +299,10 @@ DWORD WINAPI UpdaterThread(LPVOID param)
         if (!g_originalDWriteCreateFactory)
         {
             LogMessage("Failed to get DWriteCreateFactory function from script extender\n");
-            // Resume the game despite error
-            if (g_mainThreadHandle != NULL) {
-                ResumeThread(g_mainThreadHandle);
-                LogMessage("Game thread resumed after error\n");
+            // Signal event to let the game continue despite error
+            if (g_syncEvent != NULL) {
+                SetEvent(g_syncEvent);
+                LogMessage("Synchronization event signaled after error\n");
             }
             return 1;
         }
@@ -233,11 +310,11 @@ DWORD WINAPI UpdaterThread(LPVOID param)
         LogMessage("Dependencies loaded successfully\n");
         LogMessage("======= BG3 Upscaler Proxy DLL Setup Complete =======\n");
         
-        // Now resume the game since everything is ready
-        LogMessage("Resuming game thread...\n");
-        if (g_mainThreadHandle != NULL) {
-            ResumeThread(g_mainThreadHandle);
-            LogMessage("Game thread resumed\n");
+        // Signal the event to let the game continue
+        LogMessage("Signaling synchronization event...\n");
+        if (g_syncEvent != NULL) {
+            SetEvent(g_syncEvent);
+            LogMessage("Synchronization event signaled, main thread can continue\n");
         }
     }
     else
@@ -256,12 +333,18 @@ bool LoadDependencies()
     std::wstring dllDir = GetDllDirectory();
     std::wstring modsFolder = dllDir + UPSCALER_FOLDER;
     
+    // Create synchronization event
+    g_syncEvent = CreateEvent(NULL, TRUE, TRUE, NULL);  // Manual reset, initially signaled
+    if (g_syncEvent == NULL) {
+        OutputDebugStringA("Failed to create synchronization event!\n");
+    }
+    
     LogMessage("======= BG3 Upscaler Proxy DLL Starting =======\n");
     
     // Reset our log file but NOT the upscaler logs
     // We need to let BG3Upscaler create its own log
     std::wstring ourLogPath = modsFolder + OUR_LOG_FILE;
-    DeleteFileW(ourLogPath.c_str()); // It's okay if the file doesn't exist
+    DeleteFileW(ourLogPath.c_str());
     OutputDebugStringA("Reset our log file\n");
     
     // Create or clear our own log file
@@ -288,13 +371,11 @@ bool LoadDependencies()
     
     LogMessage("Not loading any upscaler DLLs - waiting for upscaler to be hooked via external mechanism\n");
     
-    // Get the main thread handle - this is crucial for suspension to work
     auto hProcess = GetCurrentProcess();
     HANDLE hThread{ NULL };
     DuplicateHandle(hProcess, GetCurrentThread(), hProcess, &hThread, 0, FALSE, DUPLICATE_SAME_ACCESS);
     SetMainThread(hThread);
     
-    // We no longer suspend here - the background thread will do it
     LogMessage("Main thread continuing. Thread ID: %d. Waiting for background thread to run...\n", GetCurrentThreadId());
     
     // Create a background thread to handle everything else
@@ -304,7 +385,6 @@ bool LoadDependencies()
         CloseHandle(updaterThread); // We don't need to keep the handle open
     } else {
         LogMessage("ERROR: Failed to create background thread! Error code: %d\n", GetLastError());
-        // We don't need to do anything special here since the game thread isn't suspended
         LogMessage("Game will continue normally without Script Extender\n");
     }
     
@@ -315,6 +395,17 @@ bool LoadDependencies()
 // Exported function that forwards to the original DWriteCreateFactory
 extern "C" __declspec(dllexport) HRESULT WINAPI DWriteCreateFactory(int factoryType, REFIID iid, IUnknown** factory)
 {
+    // Check if we need to yield for synchronization
+    if (g_syncEvent != NULL) {
+        // If event is not signaled, we should yield briefly
+        if (WaitForSingleObject(g_syncEvent, 0) == WAIT_TIMEOUT) {
+            // Yield CPU time to allow updater thread to complete its work
+            // This is a soft yield, not a hard suspension
+            Sleep(10);
+            WaitForSingleObject(g_syncEvent, 100);
+        }
+    }
+    
     if (!g_originalDWriteCreateFactory)
     {
         return E_FAIL;
@@ -328,26 +419,28 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
-        // Load dependencies when the DLL is attached
         if (!LoadDependencies())
         {
-            // If dependencies failed to load, return FALSE to prevent the DLL from loading
             return FALSE;
         }
         break;
         
     case DLL_PROCESS_DETACH:
-        // Clean up when the DLL is detached
         if (g_scriptExtenderDll)
         {
             FreeLibrary(g_scriptExtenderDll);
             g_scriptExtenderDll = NULL;
         }
         
-        // Close our log file
         if (g_logFile.is_open())
         {
             g_logFile.close();
+        }
+        
+        if (g_syncEvent != NULL)
+        {
+            CloseHandle(g_syncEvent);
+            g_syncEvent = NULL;
         }
         break;
     }

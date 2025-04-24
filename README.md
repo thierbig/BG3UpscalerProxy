@@ -20,7 +20,7 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 ## Features
 
 - Enables simultaneous use of upscaler, Script Extender, and other mods requiring SE such as Mod Configuration Menu
-- Works with both DLSS or FSR3
+- Works with DLSS or FSR3 or dlssg-to-fsr3
 - The proxy is compatible with both DX11 and Vulkan
 - Script Extender auto updater works
 - Detailed logging for troubleshooting in the `UpscalerProxy.log` file
@@ -30,16 +30,16 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 - You must purchase the original BG3 upscaler injection from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
 - You need the [BG3 Script Extender](https://github.com/Norbyte/bg3se) installed
 - This only works with Baldur's Gate 3 on PC
-- When using the modified mods files with DLSS4, you **must** use Vulkan rendering mode (not DX11)
+- When using the modified mods files with DLSS4 FG, you **must** use Vulkan rendering mode (not DX11)
 
 ## Installation
 
-1. Purchase and activate the original upscaler from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
+1. Purchase and activate an upscaler from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958). He offers DLSS FG or FSR3
 2. **Rename** the Script Extender's original `DWrite.dll` to `ScriptExtender.dll` in your Baldur's Gate 3 bin folder
 3. **Copy** the `DWrite.dll` from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases) to your Baldur's Gate 3 bin folder
 4. **(Optional but Recommended)** Replace PureDark's `mods` folder with the one from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases) for access to DLSS4 and MFG
 
-## Why Use This Modified "mods" Folder Instead of PureDark's official link?
+## Why Use This Modified "mods" Folder Instead of PureDark's official "mods" folder?
 
 This version offers these improvements:
 - DLSS 4 instead of DLSS 3 (better performance and visual quality)
@@ -48,7 +48,9 @@ This version offers these improvements:
 **Important:** 
 - The modified mods files are designed for Nvidia GPUs series 4000/5000 because of DLSS4 MFG support
 - These modified mods files can **ONLY** be used with Vulkan as DX11 does not support DLSS4
+- The modified "mods" folder should only be used with Vulkan and original Frame Generation (FG)
 - FSR3 is untested and should only work with DX11 and with the original PureDark's mods file
+- This tool is also compatible with [dlssg-to-fsr3](https://www.nexusmods.com/site/mods/738?tab=posts&BH=0) if installed
 
 **Note:** You still need to purchase PureDark's plugin for authentication.
 
