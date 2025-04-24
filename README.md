@@ -44,6 +44,7 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 This version offers these improvements:
 - DLSS 4 instead of DLSS 3 (better performance and visual quality)
 - Access to Multi-Frame Generation (MFG) in addition to Frame Generation (FG)
+- Uses Preset K by default for best DLSS performance available (4/24/2025)
 
 **Important:** 
 - The modified mods files are designed for Nvidia GPUs series 4000/5000 because of DLSS4 MFG support
@@ -57,6 +58,7 @@ This version offers these improvements:
 ## Known Issues
 
 - **MCM Menu Not Appearing Correctly**: The Mod Configuration Menu may not pop up correctly when using this proxy. Workaround: Set your MCM settings before installing this mod, then reload your game with this mod installed.
+  - For the option to change MCM settings in-game, we need PureDark to publish a new version with the option to disable his overlay because it's conflicting with MCM. Ask him on Discord.
 - **Save File Images Not Rendering Correctly**: In-game save file images may not be properly rendered. This is only a visual issue and does not affect functionality.
 
 ## Troubleshooting
@@ -65,8 +67,6 @@ If you experience any issues:
 1. Check the `UpscalerProxy.log` file in your `mods` folder for error messages
 2. Ensure you've properly renamed the original Script Extender DLL to `ScriptExtender.dll`
 3. Verify that your GPU supports the upscaler features you're trying to use
-4. If you're experiencing launching issues, try using `DWrite_alternate.dll` instead. This version uses different thread handling which may help with lower-end systems.
-
 
 ### For Persistent Crashing Issues
 
