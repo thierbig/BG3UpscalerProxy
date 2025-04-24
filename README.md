@@ -30,14 +30,14 @@ This proxy DLL solves compatibility issues between upscaler injections and the B
 - You must purchase the original BG3 upscaler injection from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
 - You need the [BG3 Script Extender](https://github.com/Norbyte/bg3se) installed
 - This only works with Baldur's Gate 3 on PC
-- When using the modified mods files with DLSS4 FG, you **must** use Vulkan rendering mode (not DX11)
+- When using the modified "mods" folder with DLSS4 FG, you **must** use Vulkan rendering mode (not DX11)
 
 ## Installation
 
 1. Purchase and activate an upscaler from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958). He offers DLSS FG or FSR3
 2. **Rename** the Script Extender's original `DWrite.dll` to `ScriptExtender.dll` in your Baldur's Gate 3 bin folder
 3. **Copy** the `DWrite.dll` from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases) to your Baldur's Gate 3 bin folder
-4. **(Optional but Recommended)** Replace PureDark's `mods` folder with the one from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases) for access to DLSS4 and MFG
+4. **(Optional but Recommended)** Replace PureDark's `mods` folder with the one from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases) for access to DLSS4 and MFG and Preset K
 
 ## Why Use This Modified "mods" Folder Instead of PureDark's official "mods" folder?
 
