@@ -1,5 +1,8 @@
 #include <windows.h>
 #include <string>
+#include <imgui.h>
+#include <psapi.h>
+
 #include <stdio.h>
 #include <vector>
 #include <fstream>
@@ -34,6 +37,96 @@ HANDLE g_syncEvent = NULL;
 // Exported function pointers from the script extender
 typedef HRESULT(WINAPI* DWriteCreateFactoryFunc)(int factoryType, REFIID iid, IUnknown** factory);
 DWriteCreateFactoryFunc g_originalDWriteCreateFactory = NULL;
+
+void LogMessage(const char* format, ...);
+
+static ImGuiContext* g_ImCtx{};
+
+void InitImGui()
+{
+    if (!g_ImCtx) {
+        IMGUI_CHECKVERSION();
+        g_ImCtx = ImGui::CreateContext();
+        ImGui::SetCurrentContext(g_ImCtx);
+        LogMessage("Created ImGui 1.90.9 context at %p\n", g_ImCtx);
+        
+        // Initialize IO settings to prevent other parts of the application from changing them
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        
+        // This prevents other contexts from taking over as the default
+        ImGui::SetAllocatorFunctions(nullptr, nullptr, g_ImCtx);
+    } else {
+        // Always restore our context if it already exists
+        ImGui::SetCurrentContext(g_ImCtx);
+        LogMessage("Restored existing ImGui context at %p\n", g_ImCtx);
+    }
+}
+
+extern "C" __declspec(dllexport) ImGuiIO* ImGui_GetIO()
+{
+    if (!g_ImCtx) {
+        LogMessage("Warning: ImGui_GetIO called before context initialization\n");
+        return nullptr;
+    }
+    ImGui::SetCurrentContext(g_ImCtx); // Always enforce our context
+    return &ImGui::GetIO();
+}
+
+extern "C" __declspec(dllexport) void ImGui_NewFrame()
+{
+    if (!g_ImCtx) {
+        LogMessage("Warning: ImGui_NewFrame called before context initialization\n");
+        return;
+    }
+    ImGui::SetCurrentContext(g_ImCtx); // Always enforce our context
+    ImGui::NewFrame();
+}
+
+extern "C" __declspec(dllexport) void ImGui_Render()
+{
+    if (!g_ImCtx) {
+        LogMessage("Warning: ImGui_Render called before context initialization\n");
+        return;
+    }
+    ImGui::SetCurrentContext(g_ImCtx); // Always enforce our context
+    ImGui::Render();
+}
+
+void PatchSEImGuiCalls()
+{
+    // Grab the first 8 bytes of each real ImGui function
+    BYTE sigGetIO[8];  memcpy(sigGetIO   , ImGui::GetIO   , 8);
+    BYTE sigNew[8];    memcpy(sigNew     , ImGui::NewFrame, 8);
+    BYTE sigRend[8];   memcpy(sigRend    , ImGui::Render  , 8);
+
+    struct Pat { BYTE sig[8]; FARPROC dst; char const* name; } P[] = {
+        { {}, GetProcAddress(GetModuleHandleA("DWrite.dll"), "ImGui_GetIO"  ), "GetIO"   },
+        { {}, GetProcAddress(GetModuleHandleA("DWrite.dll"), "ImGui_NewFrame"), "NewFrame"},
+        { {}, GetProcAddress(GetModuleHandleA("DWrite.dll"), "ImGui_Render" ), "Render"  }
+    };
+    memcpy(P[0].sig, sigGetIO,8); memcpy(P[1].sig, sigNew,8); memcpy(P[2].sig, sigRend,8);
+
+    MODULEINFO mi{}; GetModuleInformation(GetCurrentProcess(), g_scriptExtenderDll, &mi, sizeof(mi));
+    BYTE* beg = (BYTE*)g_scriptExtenderDll;
+    BYTE* end = beg + mi.SizeOfImage;
+    int patched = 0;
+
+    for (auto& p : P)
+    {
+        for (BYTE* cur = beg; cur < end-8; ++cur)
+        {
+            if (memcmp(cur, p.sig, 8)==0) {
+                DWORD old; VirtualProtect(cur, 8, PAGE_EXECUTE_READWRITE, &old);
+                *(DWORD*)(cur+1) = (DWORD)((BYTE*)p.dst - (cur+5)); // rewrite rel32
+                VirtualProtect(cur, 8, old, &old);
+                LogMessage("Patched SE call ImGui::%s at %p\n", p.name, cur);
+                ++patched; break;
+            }
+        }
+    }
+    LogMessage("Total ImGui patches applied: %d\n", patched);
+}
 
 std::wstring GetDllDirectory()
 {
@@ -310,6 +403,14 @@ DWORD WINAPI UpdaterThread(LPVOID param)
         LogMessage("Dependencies loaded successfully\n");
         LogMessage("======= BG3 Upscaler Proxy DLL Setup Complete =======\n");
         
+        // Give Script Extender time to fully initialize
+        LogMessage("Waiting for Script Extender to initialize before patching...\n");
+        Sleep(20000); // Wait 10 seconds
+        
+        // Now patch the ImGui calls
+        LogMessage("Applying ImGui patches...\n");
+        PatchSEImGuiCalls();
+        
         // Signal the event to let the game continue
         LogMessage("Signaling synchronization event...\n");
         if (g_syncEvent != NULL) {
@@ -419,10 +520,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
+        InitImGui();
         if (!LoadDependencies())
         {
             return FALSE;
         }
+
         break;
         
     case DLL_PROCESS_DETACH:

@@ -2,3 +2,6 @@ LIBRARY DWrite
 
 EXPORTS
     DWriteCreateFactory @1
+    ImGui_GetIO         @2
+    ImGui_NewFrame      @3
+    ImGui_Render        @4
