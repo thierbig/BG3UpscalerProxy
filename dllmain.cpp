@@ -40,150 +40,142 @@ DWriteCreateFactoryFunc g_originalDWriteCreateFactory = NULL;
 
 void LogMessage(const char* format, ...);
 
-static ImGuiContext* g_ImCtx{};
+// ──────────────────────────────────────────────────────────────────────────────
+//  ImGui-related globals
+// ──────────────────────────────────────────────────────────────────────────────
+static ImGuiContext* g_ImCtx        = nullptr;   // captured from SE
+static FARPROC       g_TrampCreate  = nullptr;   // unused (could store trampoline)
 
-void InitImGui()
+
+static ImGuiContext* WINAPI Hook_CreateContext(ImFontAtlas* atlas)
 {
+    auto RealCreate =
+        (ImGuiContext* (WINAPI*)(ImFontAtlas*))g_TrampCreate;
+    ImGuiContext* ctx = RealCreate(atlas);
+
     if (!g_ImCtx) {
-        IMGUI_CHECKVERSION();
-        g_ImCtx = ImGui::CreateContext();
-        ImGui::SetCurrentContext(g_ImCtx);
-        LogMessage("Created ImGui 1.90.9 context at %p\n", g_ImCtx);
-        
-        // Initialize IO settings to prevent other parts of the application from changing them
-        ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-        
-        // This prevents other contexts from taking over as the default
-        ImGui::SetAllocatorFunctions(nullptr, nullptr, g_ImCtx);
-    } else {
-        // Always restore our context if it already exists
-        ImGui::SetCurrentContext(g_ImCtx);
-        LogMessage("Restored existing ImGui context at %p\n", g_ImCtx);
+        g_ImCtx = ctx;
+        LogMessage("Captured SE ImGuiContext at %p\n", g_ImCtx);
     }
+    return ctx;
 }
+
+static BYTE          g_Gateway[32];               // raw bytes
+using CreateCtxFn = ImGuiContext* (__cdecl*)(ImFontAtlas*);
+static CreateCtxFn   RealCreate = nullptr;     
+
+void HookCreateContextOnce()
+{
+    BYTE* tgt = (BYTE*)ImGui::CreateContext;
+    DWORD  old;
+    VirtualProtect(tgt, 14, PAGE_EXECUTE_READWRITE, &old);
+
+    // 1. keep a copy of the first 5 bytes (size of the JMP we’ll overwrite with)
+    memcpy(g_Gateway, tgt, 5);
+
+    // 2. append absolute JMP back to the remainder of the original function
+    BYTE* p = g_Gateway + 5;
+    p[0] = 0xFF; p[1] = 0x25; *(DWORD*)(p+2) = 0;
+    *(uint64_t*)(p+6) = (uint64_t)(tgt + 5);
+
+    // 3. write our hook (5-byte RVA-relative JMP is enough here)
+    intptr_t rel = (BYTE*)Hook_CreateContext - (tgt + 5);
+    tgt[0] = 0xE9; *(int32_t*)(tgt + 1) = (int32_t)rel;
+
+    VirtualProtect(tgt, 14, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), tgt, 14);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  2)  Wrappers exported by DWrite.dll – always restore g_ImCtx
+// ──────────────────────────────────────────────────────────────────────────────
 extern "C" __declspec(dllexport) ImGuiIO* ImGui_GetIO()
 {
-    if (!g_ImCtx) {
-        LogMessage("Warning: ImGui_GetIO called before context initialization\n");
-        return nullptr;
-    }
-    ImGui::SetCurrentContext(g_ImCtx); // Always enforce our context
+    if (!g_ImCtx) return nullptr;
+    ImGui::SetCurrentContext(g_ImCtx);
     return &ImGui::GetIO();
 }
-
 extern "C" __declspec(dllexport) void ImGui_NewFrame()
 {
-    if (!g_ImCtx) {
-        LogMessage("Warning: ImGui_NewFrame called before context initialization\n");
-        return;
-    }
-    ImGui::SetCurrentContext(g_ImCtx); // Always enforce our context
+    if (!g_ImCtx) return;
+    ImGui::SetCurrentContext(g_ImCtx);
     ImGui::NewFrame();
 }
-
 extern "C" __declspec(dllexport) void ImGui_Render()
 {
-    if (!g_ImCtx) {
-        LogMessage("Warning: ImGui_Render called before context initialization\n");
-        return;
-    }
-    ImGui::SetCurrentContext(g_ImCtx); // Always enforce our context
+    if (!g_ImCtx) return;
+    ImGui::SetCurrentContext(g_ImCtx);
     ImGui::Render();
 }
 
-// ---------------------------------------------------------------------------
-//  PatchSEImGuiCalls
-//  -------------------------------------------------------------------------
-//  • First try the fully-automatic “rel32-rewrite” (scan for CALL Render).
-//    ↳ If that succeeds we’re done – no prologue patching needed.
-//  • Otherwise fall back to a tiny, always-safe inline-JMP hook for *all
-//    three* ImGui entry points in ScriptExtender (GetIO, NewFrame, Render).
-//    This guarantees that every SE call lands in the wrappers exported
-//    from **DWrite.dll**, which set/restore our context and then forward
-//    to the real ImGui.
-// ---------------------------------------------------------------------------
+// ──────────────────────────────────────────────────────────────────────────────
+//  3)  Combined patcher – sig scan first, inline-JMP fall-back
+// ──────────────────────────────────────────────────────────────────────────────
 void PatchSEImGuiCalls()
 {
-    //-----------------------------------------------------------------------
-    // 1)  try signature-based CALL-site patching (fast, non-intrusive)
-    //-----------------------------------------------------------------------
-    BYTE sigRend[8];  memcpy(sigRend, ImGui::Render, 8);
-
+    // --- helper table with sig + wrapper targets ----------------------------
     HMODULE hSelf = GetModuleHandleA("DWrite.dll");
-    FARPROC pGetIO    = GetProcAddress(hSelf, "ImGui_GetIO");
-    FARPROC pNewFrame = GetProcAddress(hSelf, "ImGui_NewFrame");
-    FARPROC pRender   = GetProcAddress(hSelf, "ImGui_Render");
-
-    struct Pat { BYTE sig[8]; FARPROC dst; const char* name; } pat[3] =
-    {
-        { {}, pGetIO   , "GetIO"    },
-        { {}, pNewFrame, "NewFrame" },
-        { {}, pRender  , "Render"   }
+    struct Sig { BYTE pat[8]; FARPROC wrap; const char* name; } S[3] = {
+        {{}, GetProcAddress(hSelf,"ImGui_GetIO")   ,"GetIO"   },
+        {{}, GetProcAddress(hSelf,"ImGui_NewFrame"),"NewFrame"},
+        {{}, GetProcAddress(hSelf,"ImGui_Render")  ,"Render"  }
     };
-    memcpy(pat[0].sig, ImGui::GetIO   , 8);
-    memcpy(pat[1].sig, ImGui::NewFrame, 8);
-    memcpy(pat[2].sig, sigRend        , 8);
+    memcpy(S[0].pat, ImGui::GetIO   , 8);
+    memcpy(S[1].pat, ImGui::NewFrame, 8);
+    memcpy(S[2].pat, ImGui::Render  , 8);
 
-    MODULEINFO mi{}; GetModuleInformation(GetCurrentProcess(),
-                                          g_scriptExtenderDll, &mi, sizeof(mi));
+    // scan SE .text for those eight-byte prologues
+    MODULEINFO mi{};
+    GetModuleInformation(GetCurrentProcess(), g_scriptExtenderDll, &mi,sizeof(mi));
     BYTE* beg = (BYTE*)g_scriptExtenderDll;
     BYTE* end = beg + mi.SizeOfImage;
     int   patched = 0;
 
-    for (auto& p : pat)
+    for (auto& s : S)
     {
-        for (BYTE* cur = beg; cur < end - 8; ++cur)
+        for (BYTE* cur = beg; cur < end-8; ++cur)
         {
-            if (memcmp(cur, p.sig, 8) != 0) continue;
+            if (memcmp(cur, s.pat, 8)) continue;
 
-            DWORD old; VirtualProtect(cur, 8, PAGE_EXECUTE_READWRITE, &old);
-            *(DWORD*)(cur + 1) = (DWORD)((BYTE*)p.dst - (cur + 5));   // rel32
-            VirtualProtect(cur, 8, old, &old);
+            DWORD old; VirtualProtect(cur,8,PAGE_EXECUTE_READWRITE,&old);
+            *(DWORD*)(cur+1) = (DWORD)((BYTE*)s.wrap - (cur+5)); // rewrite rel32
+            VirtualProtect(cur,8,old,&old);
 
-            LogMessage("Patched SE call ImGui::%s at %p\n", p.name, cur);
-            ++patched;
-            break;   // go patch next target
+            LogMessage("Patched SE call ImGui::%s at %p\n", s.name, cur);
+            ++patched; break;
         }
     }
 
-    //-----------------------------------------------------------------------
-    // 2)  if the scan found none (or only some) → inline-JMP fallback
-    //-----------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // fall-back for any function not found by sig scan – inline absolute JMP
+    // ------------------------------------------------------------------------
     if (patched < 3)
     {
-        struct Hook { void* seProc; FARPROC wrapper; const char* name; } H[] =
-        {
-            { (void*)ImGui::GetIO   , pGetIO   , "GetIO"    },
-            { (void*)ImGui::NewFrame, pNewFrame, "NewFrame" },
-            { (void*)ImGui::Render  , pRender  , "Render"   }
+        struct Hook { void* seProc; FARPROC wrap; const char* name; } H[] = {
+            { (void*)ImGui::GetIO   , S[0].wrap , "GetIO"    },
+            { (void*)ImGui::NewFrame, S[1].wrap , "NewFrame" },
+            { (void*)ImGui::Render  , S[2].wrap , "Render"   }
         };
 
         for (auto& h : H)
         {
             BYTE* p = (BYTE*)h.seProc;
-            // skip if already overwriting this prologue (e.g., Render when sig-patch hit)
-            if (*(uint16_t*)p == 0x25FF) continue;   // starts with FF 25 → already jmp
+            if (*(uint16_t*)p == 0x25FF) continue;        // already JMP
 
-            DWORD old; VirtualProtect(p, 12, PAGE_EXECUTE_READWRITE, &old);
-
-            /* x64 absolute JMP (12 bytes total):
-               FF 25 00 00 00 00        jmp [RIP+0]
-               xx xx xx xx xx xx xx xx  (absolute target qword)           */
-            p[0] = 0xFF;  p[1] = 0x25;  *(DWORD*)(p + 2) = 0;
-            *(uint64_t*)(p + 6) = (uint64_t)h.wrapper;
-
-            VirtualProtect(p, 12, old, &old);
-            FlushInstructionCache(GetCurrentProcess(), p, 12);
+            DWORD old; VirtualProtect(p,12,PAGE_EXECUTE_READWRITE,&old);
+            p[0]=0xFF; p[1]=0x25; *(DWORD*)(p+2)=0;
+            *(uint64_t*)(p+6) = (uint64_t)h.wrap;
+            VirtualProtect(p,12,old,&old);
+            FlushInstructionCache(GetCurrentProcess(),p,12);
 
             LogMessage("Inline-JMP-hooked ImGui::%s at %p → %p\n",
-                       h.name, p, h.wrapper);
+                       h.name,p,h.wrap);
             ++patched;
         }
     }
-
     LogMessage("Total ImGui patches applied: %d\n", patched);
 }
+
 
 
 std::wstring GetDllDirectory()
@@ -578,7 +570,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
-        InitImGui();
+    HookCreateContextOnce();          // capture SE context later
         if (!LoadDependencies())
         {
             return FALSE;
