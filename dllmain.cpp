@@ -62,7 +62,6 @@ void InitImGui()
         LogMessage("Restored existing ImGui context at %p\n", g_ImCtx);
     }
 }
-
 extern "C" __declspec(dllexport) ImGuiIO* ImGui_GetIO()
 {
     if (!g_ImCtx) {
@@ -93,40 +92,99 @@ extern "C" __declspec(dllexport) void ImGui_Render()
     ImGui::Render();
 }
 
+// ---------------------------------------------------------------------------
+//  PatchSEImGuiCalls
+//  -------------------------------------------------------------------------
+//  • First try the fully-automatic “rel32-rewrite” (scan for CALL Render).
+//    ↳ If that succeeds we’re done – no prologue patching needed.
+//  • Otherwise fall back to a tiny, always-safe inline-JMP hook for *all
+//    three* ImGui entry points in ScriptExtender (GetIO, NewFrame, Render).
+//    This guarantees that every SE call lands in the wrappers exported
+//    from **DWrite.dll**, which set/restore our context and then forward
+//    to the real ImGui.
+// ---------------------------------------------------------------------------
 void PatchSEImGuiCalls()
 {
-    // Grab the first 8 bytes of each real ImGui function
-    BYTE sigGetIO[8];  memcpy(sigGetIO   , ImGui::GetIO   , 8);
-    BYTE sigNew[8];    memcpy(sigNew     , ImGui::NewFrame, 8);
-    BYTE sigRend[8];   memcpy(sigRend    , ImGui::Render  , 8);
+    //-----------------------------------------------------------------------
+    // 1)  try signature-based CALL-site patching (fast, non-intrusive)
+    //-----------------------------------------------------------------------
+    BYTE sigRend[8];  memcpy(sigRend, ImGui::Render, 8);
 
-    struct Pat { BYTE sig[8]; FARPROC dst; char const* name; } P[] = {
-        { {}, GetProcAddress(GetModuleHandleA("DWrite.dll"), "ImGui_GetIO"  ), "GetIO"   },
-        { {}, GetProcAddress(GetModuleHandleA("DWrite.dll"), "ImGui_NewFrame"), "NewFrame"},
-        { {}, GetProcAddress(GetModuleHandleA("DWrite.dll"), "ImGui_Render" ), "Render"  }
+    HMODULE hSelf = GetModuleHandleA("DWrite.dll");
+    FARPROC pGetIO    = GetProcAddress(hSelf, "ImGui_GetIO");
+    FARPROC pNewFrame = GetProcAddress(hSelf, "ImGui_NewFrame");
+    FARPROC pRender   = GetProcAddress(hSelf, "ImGui_Render");
+
+    struct Pat { BYTE sig[8]; FARPROC dst; const char* name; } pat[3] =
+    {
+        { {}, pGetIO   , "GetIO"    },
+        { {}, pNewFrame, "NewFrame" },
+        { {}, pRender  , "Render"   }
     };
-    memcpy(P[0].sig, sigGetIO,8); memcpy(P[1].sig, sigNew,8); memcpy(P[2].sig, sigRend,8);
+    memcpy(pat[0].sig, ImGui::GetIO   , 8);
+    memcpy(pat[1].sig, ImGui::NewFrame, 8);
+    memcpy(pat[2].sig, sigRend        , 8);
 
-    MODULEINFO mi{}; GetModuleInformation(GetCurrentProcess(), g_scriptExtenderDll, &mi, sizeof(mi));
+    MODULEINFO mi{}; GetModuleInformation(GetCurrentProcess(),
+                                          g_scriptExtenderDll, &mi, sizeof(mi));
     BYTE* beg = (BYTE*)g_scriptExtenderDll;
     BYTE* end = beg + mi.SizeOfImage;
-    int patched = 0;
+    int   patched = 0;
 
-    for (auto& p : P)
+    for (auto& p : pat)
     {
-        for (BYTE* cur = beg; cur < end-8; ++cur)
+        for (BYTE* cur = beg; cur < end - 8; ++cur)
         {
-            if (memcmp(cur, p.sig, 8)==0) {
-                DWORD old; VirtualProtect(cur, 8, PAGE_EXECUTE_READWRITE, &old);
-                *(DWORD*)(cur+1) = (DWORD)((BYTE*)p.dst - (cur+5)); // rewrite rel32
-                VirtualProtect(cur, 8, old, &old);
-                LogMessage("Patched SE call ImGui::%s at %p\n", p.name, cur);
-                ++patched; break;
-            }
+            if (memcmp(cur, p.sig, 8) != 0) continue;
+
+            DWORD old; VirtualProtect(cur, 8, PAGE_EXECUTE_READWRITE, &old);
+            *(DWORD*)(cur + 1) = (DWORD)((BYTE*)p.dst - (cur + 5));   // rel32
+            VirtualProtect(cur, 8, old, &old);
+
+            LogMessage("Patched SE call ImGui::%s at %p\n", p.name, cur);
+            ++patched;
+            break;   // go patch next target
         }
     }
+
+    //-----------------------------------------------------------------------
+    // 2)  if the scan found none (or only some) → inline-JMP fallback
+    //-----------------------------------------------------------------------
+    if (patched < 3)
+    {
+        struct Hook { void* seProc; FARPROC wrapper; const char* name; } H[] =
+        {
+            { (void*)ImGui::GetIO   , pGetIO   , "GetIO"    },
+            { (void*)ImGui::NewFrame, pNewFrame, "NewFrame" },
+            { (void*)ImGui::Render  , pRender  , "Render"   }
+        };
+
+        for (auto& h : H)
+        {
+            BYTE* p = (BYTE*)h.seProc;
+            // skip if already overwriting this prologue (e.g., Render when sig-patch hit)
+            if (*(uint16_t*)p == 0x25FF) continue;   // starts with FF 25 → already jmp
+
+            DWORD old; VirtualProtect(p, 12, PAGE_EXECUTE_READWRITE, &old);
+
+            /* x64 absolute JMP (12 bytes total):
+               FF 25 00 00 00 00        jmp [RIP+0]
+               xx xx xx xx xx xx xx xx  (absolute target qword)           */
+            p[0] = 0xFF;  p[1] = 0x25;  *(DWORD*)(p + 2) = 0;
+            *(uint64_t*)(p + 6) = (uint64_t)h.wrapper;
+
+            VirtualProtect(p, 12, old, &old);
+            FlushInstructionCache(GetCurrentProcess(), p, 12);
+
+            LogMessage("Inline-JMP-hooked ImGui::%s at %p → %p\n",
+                       h.name, p, h.wrapper);
+            ++patched;
+        }
+    }
+
     LogMessage("Total ImGui patches applied: %d\n", patched);
 }
+
 
 std::wstring GetDllDirectory()
 {
@@ -405,7 +463,7 @@ DWORD WINAPI UpdaterThread(LPVOID param)
         
         // Give Script Extender time to fully initialize
         LogMessage("Waiting for Script Extender to initialize before patching...\n");
-        Sleep(20000); // Wait 10 seconds
+        Sleep(40000); // Wait 10 seconds
         
         // Now patch the ImGui calls
         LogMessage("Applying ImGui patches...\n");
