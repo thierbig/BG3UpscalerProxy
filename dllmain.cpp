@@ -8,6 +8,8 @@
 #include <fstream>
 #include <thread>
 #include <chrono>
+#include <detours.h>
+
 
 #define UPSCALER_FOLDER L"mods\\"
 #define SCRIPTEXTENDER_DLL_NAME L"ScriptExtender.dll"
@@ -44,46 +46,37 @@ void LogMessage(const char* format, ...);
 //  ImGui-related globals
 // ──────────────────────────────────────────────────────────────────────────────
 static ImGuiContext* g_ImCtx        = nullptr;   // captured from SE
-static FARPROC       g_TrampCreate  = nullptr;   // unused (could store trampoline)
+static uint64_t g_TelGetIO   = 0;
+static uint64_t g_TelNewFrame= 0;
+static uint64_t g_TelRender  = 0;
 
+using CreateCtxFn = ImGuiContext* (__cdecl*)(ImFontAtlas*);
+static CreateCtxFn   RealCreate = nullptr;     
 
 static ImGuiContext* WINAPI Hook_CreateContext(ImFontAtlas* atlas)
 {
-    auto RealCreate =
-        (ImGuiContext* (WINAPI*)(ImFontAtlas*))g_TrampCreate;
     ImGuiContext* ctx = RealCreate(atlas);
-
     if (!g_ImCtx) {
         g_ImCtx = ctx;
         LogMessage("Captured SE ImGuiContext at %p\n", g_ImCtx);
     }
+    // Forcefully override GImGui globally
+    extern ImGuiContext* GImGui;
+    GImGui = g_ImCtx;
+    LogMessage("Forced GImGui override to %p\n", GImGui);
     return ctx;
 }
 
-static BYTE          g_Gateway[32];               // raw bytes
-using CreateCtxFn = ImGuiContext* (__cdecl*)(ImFontAtlas*);
-static CreateCtxFn   RealCreate = nullptr;     
-
 void HookCreateContextOnce()
 {
-    BYTE* tgt = (BYTE*)ImGui::CreateContext;
-    DWORD  old;
-    VirtualProtect(tgt, 14, PAGE_EXECUTE_READWRITE, &old);
-
-    // 1. keep a copy of the first 5 bytes (size of the JMP we’ll overwrite with)
-    memcpy(g_Gateway, tgt, 5);
-
-    // 2. append absolute JMP back to the remainder of the original function
-    BYTE* p = g_Gateway + 5;
-    p[0] = 0xFF; p[1] = 0x25; *(DWORD*)(p+2) = 0;
-    *(uint64_t*)(p+6) = (uint64_t)(tgt + 5);
-
-    // 3. write our hook (5-byte RVA-relative JMP is enough here)
-    intptr_t rel = (BYTE*)Hook_CreateContext - (tgt + 5);
-    tgt[0] = 0xE9; *(int32_t*)(tgt + 1) = (int32_t)rel;
-
-    VirtualProtect(tgt, 14, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), tgt, 14);
+    if (!RealCreate) {
+        RealCreate = (CreateCtxFn)ImGui::CreateContext;
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourAttach(&(PVOID&)RealCreate, Hook_CreateContext);
+        DetourTransactionCommit();
+        LogMessage("Detours: Hooked ImGui::CreateContext\n");
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -91,19 +84,34 @@ void HookCreateContextOnce()
 // ──────────────────────────────────────────────────────────────────────────────
 extern "C" __declspec(dllexport) ImGuiIO* ImGui_GetIO()
 {
-    if (!g_ImCtx) return nullptr;
+    ++g_TelGetIO;
+    if (!g_ImCtx) {
+        LogMessage("ImGui_GetIO called (%d): context missing\n", g_TelGetIO);
+        return nullptr;
+    }
+    LogMessage("ImGui_GetIO called (%d): context present\n", g_TelGetIO);
     ImGui::SetCurrentContext(g_ImCtx);
     return &ImGui::GetIO();
 }
 extern "C" __declspec(dllexport) void ImGui_NewFrame()
 {
-    if (!g_ImCtx) return;
+    ++g_TelNewFrame;
+    if (!g_ImCtx) {
+        LogMessage("ImGui_NewFrame called (%d): context missing\n", g_TelNewFrame);
+        return;
+    }
+    LogMessage("ImGui_NewFrame called (%d): context present\n", g_TelNewFrame);
     ImGui::SetCurrentContext(g_ImCtx);
     ImGui::NewFrame();
 }
 extern "C" __declspec(dllexport) void ImGui_Render()
 {
-    if (!g_ImCtx) return;
+    ++g_TelRender;
+    if (!g_ImCtx) {
+        LogMessage("ImGui_Render called (%d): context missing\n", g_TelRender);
+        return;
+    }
+    LogMessage("ImGui_Render called (%d): context present\n", g_TelRender);
     ImGui::SetCurrentContext(g_ImCtx);
     ImGui::Render();
 }
@@ -111,71 +119,93 @@ extern "C" __declspec(dllexport) void ImGui_Render()
 // ──────────────────────────────────────────────────────────────────────────────
 //  3)  Combined patcher – sig scan first, inline-JMP fall-back
 // ──────────────────────────────────────────────────────────────────────────────
-void PatchSEImGuiCalls()
-{
-    // --- helper table with sig + wrapper targets ----------------------------
-    HMODULE hSelf = GetModuleHandleA("DWrite.dll");
-    struct Sig { BYTE pat[8]; FARPROC wrap; const char* name; } S[3] = {
-        {{}, GetProcAddress(hSelf,"ImGui_GetIO")   ,"GetIO"   },
-        {{}, GetProcAddress(hSelf,"ImGui_NewFrame"),"NewFrame"},
-        {{}, GetProcAddress(hSelf,"ImGui_Render")  ,"Render"  }
-    };
-    memcpy(S[0].pat, ImGui::GetIO   , 8);
-    memcpy(S[1].pat, ImGui::NewFrame, 8);
-    memcpy(S[2].pat, ImGui::Render  , 8);
 
-    // scan SE .text for those eight-byte prologues
-    MODULEINFO mi{};
-    GetModuleInformation(GetCurrentProcess(), g_scriptExtenderDll, &mi,sizeof(mi));
-    BYTE* beg = (BYTE*)g_scriptExtenderDll;
-    BYTE* end = beg + mi.SizeOfImage;
-    int   patched = 0;
-
-    for (auto& s : S)
-    {
-        for (BYTE* cur = beg; cur < end-8; ++cur)
-        {
-            if (memcmp(cur, s.pat, 8)) continue;
-
-            DWORD old; VirtualProtect(cur,8,PAGE_EXECUTE_READWRITE,&old);
-            *(DWORD*)(cur+1) = (DWORD)((BYTE*)s.wrap - (cur+5)); // rewrite rel32
-            VirtualProtect(cur,8,old,&old);
-
-            LogMessage("Patched SE call ImGui::%s at %p\n", s.name, cur);
-            ++patched; break;
-        }
-    }
-
-    // ------------------------------------------------------------------------
-    // fall-back for any function not found by sig scan – inline absolute JMP
-    // ------------------------------------------------------------------------
-    if (patched < 3)
-    {
-        struct Hook { void* seProc; FARPROC wrap; const char* name; } H[] = {
-            { (void*)ImGui::GetIO   , S[0].wrap , "GetIO"    },
-            { (void*)ImGui::NewFrame, S[1].wrap , "NewFrame" },
-            { (void*)ImGui::Render  , S[2].wrap , "Render"   }
-        };
-
-        for (auto& h : H)
-        {
-            BYTE* p = (BYTE*)h.seProc;
-            if (*(uint16_t*)p == 0x25FF) continue;        // already JMP
-
-            DWORD old; VirtualProtect(p,12,PAGE_EXECUTE_READWRITE,&old);
-            p[0]=0xFF; p[1]=0x25; *(DWORD*)(p+2)=0;
-            *(uint64_t*)(p+6) = (uint64_t)h.wrap;
-            VirtualProtect(p,12,old,&old);
-            FlushInstructionCache(GetCurrentProcess(),p,12);
-
-            LogMessage("Inline-JMP-hooked ImGui::%s at %p → %p\n",
-                       h.name,p,h.wrap);
-            ++patched;
-        }
-    }
-    LogMessage("Total ImGui patches applied: %d\n", patched);
+void LogBytes(const char* label, void* func, size_t len) {
+    BYTE* p = (BYTE*)func;
+    char buf[256] = {};
+    char* out = buf;
+    for (size_t i = 0; i < len; ++i)
+        out += sprintf_s(out, 256 - (out - buf), "%02X ", p[i]);
+    LogMessage("%s: %s\n", label, buf);
 }
 
+void PatchSEImGuiCalls()
+{
+    if (!g_scriptExtenderDll) {
+        LogMessage("Script Extender DLL not loaded, cannot patch ImGui calls\n");
+        return;
+    }
+    LogBytes("ImGui::GetIO", (void*)ImGui::GetIO, 16);
+LogBytes("ImGui::NewFrame", (void*)ImGui::NewFrame, 16);
+LogBytes("ImGui::Render", (void*)ImGui::Render, 16);
+
+    // Function signatures to search for (first 8 bytes of each)
+    struct Target {
+        const char* name;
+        BYTE sig[8];
+        void* detour;
+        void** orig;
+    } targets[] = {
+        { "GetIO",     {}, (void*)ImGui_GetIO,    nullptr },
+        { "NewFrame",  {}, (void*)ImGui_NewFrame, nullptr },
+        { "Render",    {}, (void*)ImGui_Render,   nullptr },
+    };
+
+    // Fill in signatures from local ImGui functions
+    memcpy(targets[0].sig, ImGui::GetIO,    8);
+    memcpy(targets[1].sig, ImGui::NewFrame, 8);
+    memcpy(targets[2].sig, ImGui::Render,   8);
+
+    // Scan SE .text for those eight-byte prologues
+    MODULEINFO mi{};
+    GetModuleInformation(GetCurrentProcess(), g_scriptExtenderDll, &mi, sizeof(mi));
+    BYTE* beg = (BYTE*)g_scriptExtenderDll;
+    BYTE* end = beg + mi.SizeOfImage;
+
+    void* foundAddrs[3] = { nullptr, nullptr, nullptr };
+
+    for (int i = 0; i < 3; ++i) {
+        for (BYTE* cur = beg; cur < end - 8; ++cur) {
+            if (memcmp(cur, targets[i].sig, 8) == 0) {
+                foundAddrs[i] = (void*)cur;
+                LogMessage("Found SE ImGui::%s at %p\n", targets[i].name, cur);
+                break;
+            }
+        }
+        if (!foundAddrs[i]) {
+            LogMessage("Failed to find SE ImGui::%s signature\n", targets[i].name);
+        }
+    }
+
+    // Use Detours to hook any found functions
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    int hooked = 0;
+    static void* origGetIO = nullptr;
+    static void* origNewFrame = nullptr;
+    static void* origRender = nullptr;
+
+    if (foundAddrs[0]) {
+        origGetIO = foundAddrs[0];
+        DetourAttach(&(PVOID&)origGetIO, (PVOID)ImGui_GetIO);
+        LogMessage("Detours: Hooked SE ImGui_GetIO\n");
+        ++hooked;
+    }
+    if (foundAddrs[1]) {
+        origNewFrame = foundAddrs[1];
+        DetourAttach(&(PVOID&)origNewFrame, (PVOID)ImGui_NewFrame);
+        LogMessage("Detours: Hooked SE ImGui_NewFrame\n");
+        ++hooked;
+    }
+    if (foundAddrs[2]) {
+        origRender = foundAddrs[2];
+        DetourAttach(&(PVOID&)origRender, (PVOID)ImGui_Render);
+        LogMessage("Detours: Hooked SE ImGui_Render\n");
+        ++hooked;
+    }
+    LONG err = DetourTransactionCommit();
+    LogMessage("Detours: ImGui patching complete (hooked=%d, result=%ld)\n", hooked, err);
+}
 
 
 std::wstring GetDllDirectory()
@@ -570,26 +600,30 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call)
     {
     case DLL_PROCESS_ATTACH:
-    HookCreateContextOnce();          // capture SE context later
+        DetourRestoreAfterWith();
+        HookCreateContextOnce();          // capture SE context later
         if (!LoadDependencies())
         {
             return FALSE;
         }
-
         break;
-        
     case DLL_PROCESS_DETACH:
+        if (RealCreate) {
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+            DetourDetach(&(PVOID&)RealCreate, Hook_CreateContext);
+            DetourTransactionCommit();
+            LogMessage("Detours: Unhooked ImGui::CreateContext\n");
+        }
         if (g_scriptExtenderDll)
         {
             FreeLibrary(g_scriptExtenderDll);
             g_scriptExtenderDll = NULL;
         }
-        
         if (g_logFile.is_open())
         {
             g_logFile.close();
         }
-        
         if (g_syncEvent != NULL)
         {
             CloseHandle(g_syncEvent);
@@ -597,6 +631,5 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
         break;
     }
-    
     return TRUE;
 }
