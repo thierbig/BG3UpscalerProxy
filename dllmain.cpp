@@ -10,7 +10,6 @@
 #include <chrono>
 #include <detours.h>
 
-
 #define UPSCALER_FOLDER L"mods\\"
 #define SCRIPTEXTENDER_DLL_NAME L"ScriptExtender.dll"
 #define OUR_LOG_FILE L"UpscalerProxy.log"
@@ -50,6 +49,14 @@ static uint64_t g_TelGetIO   = 0;
 static uint64_t g_TelNewFrame= 0;
 static uint64_t g_TelRender  = 0;
 
+// Pointers to SE's original functions (set after Detours attaches)
+using SE_GetIO_Fn   = ImGuiIO* (__cdecl*)();
+using SE_NewFrame_Fn= void (__cdecl*)();
+using SE_Render_Fn  = void (__cdecl*)();
+static SE_GetIO_Fn    g_SEGetIO    = nullptr;
+static SE_NewFrame_Fn g_SENewFrame = nullptr;
+static SE_Render_Fn   g_SERender   = nullptr;
+
 using CreateCtxFn = ImGuiContext* (__cdecl*)(ImFontAtlas*);
 static CreateCtxFn   RealCreate = nullptr;     
 
@@ -85,40 +92,65 @@ void HookCreateContextOnce()
 extern "C" __declspec(dllexport) ImGuiIO* ImGui_GetIO()
 {
     ++g_TelGetIO;
-    if (!g_ImCtx) {
-        LogMessage("ImGui_GetIO called (%d): context missing\n", g_TelGetIO);
-        return nullptr;
-    }
-    LogMessage("ImGui_GetIO called (%d): context present\n", g_TelGetIO);
-    ImGui::SetCurrentContext(g_ImCtx);
-    return &ImGui::GetIO();
+    if (g_ImCtx)
+        ImGui::SetCurrentContext(g_ImCtx);
+
+    // Call SE's original function if captured
+    if (g_SEGetIO)
+        return g_SEGetIO();
+
+    LogMessage("ImGui_GetIO called (%d): original not yet hooked\n", g_TelGetIO);
+    return nullptr;
 }
 extern "C" __declspec(dllexport) void ImGui_NewFrame()
 {
     ++g_TelNewFrame;
-    if (!g_ImCtx) {
-        LogMessage("ImGui_NewFrame called (%d): context missing\n", g_TelNewFrame);
-        return;
+    if (g_ImCtx)
+        ImGui::SetCurrentContext(g_ImCtx);
+
+    if (g_SENewFrame) {
+        g_SENewFrame();
+    } else {
+        LogMessage("ImGui_NewFrame called (%d): original not yet hooked\n", g_TelNewFrame);
     }
-    LogMessage("ImGui_NewFrame called (%d): context present\n", g_TelNewFrame);
-    ImGui::SetCurrentContext(g_ImCtx);
-    ImGui::NewFrame();
 }
 extern "C" __declspec(dllexport) void ImGui_Render()
 {
     ++g_TelRender;
-    if (!g_ImCtx) {
-        LogMessage("ImGui_Render called (%d): context missing\n", g_TelRender);
-        return;
+    if (g_ImCtx)
+        ImGui::SetCurrentContext(g_ImCtx);
+
+    if (g_SERender) {
+        g_SERender();
+    } else {
+        LogMessage("ImGui_Render called (%d): original not yet hooked\n", g_TelRender);
     }
-    LogMessage("ImGui_Render called (%d): context present\n", g_TelRender);
-    ImGui::SetCurrentContext(g_ImCtx);
-    ImGui::Render();
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 //  3)  Combined patcher – sig scan first, inline-JMP fall-back
 // ──────────────────────────────────────────────────────────────────────────────
+
+// Helper: naive pattern scan with mask (x = match, ? = wildcard)
+static BYTE* FindPattern(BYTE* begin, BYTE* end, const BYTE* pattern, const char* mask, size_t len)
+{
+    for (BYTE* cur = begin; cur <= end - (ptrdiff_t)len; ++cur)
+    {
+        bool match = true;
+        for (size_t i = 0; i < len; ++i)
+        {
+            if (mask[i] == 'x' && cur[i] != pattern[i])
+            {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+            return cur;
+    }
+    return nullptr;
+}
+
 
 void LogBytes(const char* label, void* func, size_t len) {
     BYTE* p = (BYTE*)func;
@@ -136,8 +168,8 @@ void PatchSEImGuiCalls()
         return;
     }
     LogBytes("ImGui::GetIO", (void*)ImGui::GetIO, 16);
-LogBytes("ImGui::NewFrame", (void*)ImGui::NewFrame, 16);
-LogBytes("ImGui::Render", (void*)ImGui::Render, 16);
+    LogBytes("ImGui::NewFrame", (void*)ImGui::NewFrame, 16);
+    LogBytes("ImGui::Render", (void*)ImGui::Render, 16);
 
     // Function signatures to search for (first 8 bytes of each)
     struct Target {
@@ -173,7 +205,92 @@ LogBytes("ImGui::Render", (void*)ImGui::Render, 16);
             }
         }
         if (!foundAddrs[i]) {
-            LogMessage("Failed to find SE ImGui::%s signature\n", targets[i].name);
+            if (i==0 || i==1) {
+                LogMessage("Attempting fall-back pattern scan for missing ImGui functions...\n");
+        
+                // Pattern for GetIO: 48 8B 0D ?? ?? ?? ?? 48 8B 41 38
+                const BYTE patGetIO[]  = { 0x48, 0x8B, 0x0D, 0,0,0,0, 0x48, 0x8B, 0x41, 0x38 };
+                const char maskGetIO[] = "xxx????xxxx";
+        
+                // Pattern for NewFrame: 48 89 5C 24 08 57 48 83 EC 20 48 8B 35 ?? ?? ?? ?? 48 8B F9
+                const BYTE patNewFrame[]  = { 0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20,0x48,0x8B,0x35,0,0,0,0,0x48,0x8B,0xF9 };
+                const char maskNewFrame[] = "xxxxxxxxxxxxx????xxx";
+        
+                // Additional alternative patterns
+                const BYTE patGetIO2[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x83, 0xC0, 0x08, 0xC3 };
+                const char maskGetIO2[] = "xxx????xxxxx";
+                const BYTE patNewFrame2[] = { 0x48, 0x8B, 0xC4, 0x53, 0x55, 0x57, 0x48, 0x81, 0xEC, 0,0,0,0, 0x48, 0x8B, 0x2D, 0,0,0,0 };
+                const char maskNewFrame2[] = "xxxxxxxxx????xxx????";
+        
+                // Additional fallback pattern 3 – covers other common prologue variants
+                const BYTE patGetIO3[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x8B, 0x40, 0x38 };           // mov rax,[rip+disp]; mov rax, [rax+38]
+                const char maskGetIO3[] = "xxx????xxxx";
+                const BYTE patNewFrame3[] = { 0x48,0x89,0x5C,0x24,0,0x57,0x48,0x83,0xEC,0,0x48,0x8B,0x05 }; // mov [rsp+?],rbx; push rdi; sub rsp,?; mov rax, [rip+disp]
+                const char maskNewFrame3[] = "xxxx?xxxx?xxx";
+        
+                if (i==0) {
+                    foundAddrs[0] = FindPattern(beg, end, patGetIO, maskGetIO, sizeof(patGetIO));
+                    if (!foundAddrs[0]) {
+                        // secondary heuristic for GetIO prologue variant: 48 8B 05 ?? ?? ?? ?? 48 83 C0 08 C3
+                        for (BYTE* cur = beg; cur < end - 12; ++cur) {
+                            if (cur[0]==0x48 && cur[1]==0x8B && cur[2]==0x05 &&
+                                cur[7]==0x48 && cur[8]==0x83 && cur[9]==0xC0 && cur[10]==0x08 && cur[11]==0xC3) {
+                                foundAddrs[0] = cur;
+                                LogMessage("Secondary: Found SE ImGui::GetIO at %p\n", cur);
+                                break;
+                            }
+                        }
+                        if (!foundAddrs[0]) {
+                            foundAddrs[0] = FindPattern(beg, end, patGetIO2, maskGetIO2, sizeof(patGetIO2));
+                            if (foundAddrs[0]) LogMessage("Alt2: Found SE ImGui::GetIO at %p\n", foundAddrs[0]);
+                            if (!foundAddrs[0]) {
+                                foundAddrs[0] = FindPattern(beg, end, patGetIO3, maskGetIO3, sizeof(patGetIO3));
+                                if (foundAddrs[0]) LogMessage("Alt3: Found SE ImGui::GetIO at %p\n", foundAddrs[0]);
+                                if (!foundAddrs[0]) {
+                                    // Additional fallback pattern 4 – same as patGetIO2 but tolerant ret (C3/C2 ??)
+                                    const BYTE patGetIO4[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x83, 0xC0, 0x08, 0 }; // last byte wildcard
+                                    const char maskGetIO4[] = "xxx????xxxxx?";
+                                    foundAddrs[0] = FindPattern(beg, end, patGetIO4, maskGetIO4, sizeof(patGetIO4));
+                                    if (foundAddrs[0]) LogMessage("Alt4: Found SE ImGui::GetIO at %p\n", foundAddrs[0]);
+                                    if (!foundAddrs[0]) {
+                                        // Pattern 5 – minimal stub: mov rax,[rip+disp]; ret
+                                        const BYTE patGetIO5[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0xC3 };
+                                        const char maskGetIO5[] = "xxx????xx";
+                                        foundAddrs[0] = FindPattern(beg, end, patGetIO5, maskGetIO5, sizeof(patGetIO5));
+                                        if (foundAddrs[0]) LogMessage("Alt5: Found SE ImGui::GetIO at %p\n", foundAddrs[0]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (i==1) {
+                    foundAddrs[1] = FindPattern(beg, end, patNewFrame, maskNewFrame, sizeof(patNewFrame));
+                    if (!foundAddrs[1]) {
+                        // secondary heuristic for NewFrame prologue variant
+                        for (BYTE* cur = beg; cur < end - 20; ++cur) {
+                            if (cur[0]==0x48 && cur[1]==0x8B && cur[2]==0xC4 && cur[3]==0x53 && cur[4]==0x55 && cur[5]==0x57 &&
+                                cur[6]==0x48 && cur[7]==0x81 && cur[8]==0xEC &&
+                                cur[13]==0x48 && cur[14]==0x8B && cur[15]==0x2D) {
+                                foundAddrs[1] = cur;
+                                LogMessage("Secondary: Found SE ImGui::NewFrame at %p\n", cur);
+                                break;
+                            }
+                        }
+                        if (!foundAddrs[1]) {
+                            foundAddrs[1] = FindPattern(beg, end, patNewFrame2, maskNewFrame2, sizeof(patNewFrame2));
+                            if (foundAddrs[1]) LogMessage("Alt2: Found SE ImGui::NewFrame at %p\n", foundAddrs[1]);
+                            if (!foundAddrs[1]) {
+                                foundAddrs[1] = FindPattern(beg, end, patNewFrame3, maskNewFrame3, sizeof(patNewFrame3));
+                                if (foundAddrs[1]) LogMessage("Alt3: Found SE ImGui::NewFrame at %p\n", foundAddrs[1]);
+                            }
+                        }
+                    }
+                    if (foundAddrs[1]) {
+                        LogMessage("Fallback: Found SE ImGui::NewFrame at %p\n", foundAddrs[1]);
+                    }
+                }
+            }
         }
     }
 
@@ -188,18 +305,21 @@ LogBytes("ImGui::Render", (void*)ImGui::Render, 16);
     if (foundAddrs[0]) {
         origGetIO = foundAddrs[0];
         DetourAttach(&(PVOID&)origGetIO, (PVOID)ImGui_GetIO);
+        g_SEGetIO = (SE_GetIO_Fn)origGetIO; // trampoline to original
         LogMessage("Detours: Hooked SE ImGui_GetIO\n");
         ++hooked;
     }
     if (foundAddrs[1]) {
         origNewFrame = foundAddrs[1];
         DetourAttach(&(PVOID&)origNewFrame, (PVOID)ImGui_NewFrame);
+        g_SENewFrame = (SE_NewFrame_Fn)origNewFrame;
         LogMessage("Detours: Hooked SE ImGui_NewFrame\n");
         ++hooked;
     }
     if (foundAddrs[2]) {
         origRender = foundAddrs[2];
         DetourAttach(&(PVOID&)origRender, (PVOID)ImGui_Render);
+        g_SERender = (SE_Render_Fn)origRender;
         LogMessage("Detours: Hooked SE ImGui_Render\n");
         ++hooked;
     }
