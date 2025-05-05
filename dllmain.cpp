@@ -356,7 +356,7 @@ void PatchImGuiInModule(HMODULE module, bool captureOriginal)
     BYTE* beg = (BYTE*)module;
     BYTE* end = beg + mi.SizeOfImage;
 
-    void* foundAddrs[3] = { nullptr, nullptr, nullptr };
+    void* foundAddrs[4] = { nullptr, nullptr, nullptr, nullptr };
 
     // Patterns (re-use definitions from PatchSEImGuiCalls)
     const BYTE patGetIO[]  = { 0x48, 0x8B, 0x0D, 0,0,0,0, 0x48, 0x8B, 0x41, 0x38 };
@@ -377,19 +377,21 @@ void PatchImGuiInModule(HMODULE module, bool captureOriginal)
     const char maskGetIO5[] = "xxx????x""x"; // eight bytes pattern -> xx???xx?? actually need 8 char; simplifying
 
     // reuse original eight-byte prologues from local ImGui funcs (optional)
-    BYTE sigGetIO[8]; BYTE sigNewFrame[8]; BYTE sigRender[8];
+    BYTE sigGetIO[8]; BYTE sigNewFrame[8]; BYTE sigRender[8]; BYTE sigCreate[8];
     memcpy(sigGetIO, ImGui::GetIO, 8);
     memcpy(sigNewFrame, ImGui::NewFrame, 8);
     memcpy(sigRender, ImGui::Render, 8);
+    memcpy(sigCreate, ImGui::CreateContext, 8);
 
-    struct { const char* name; BYTE* sig; void* detour; void** orig; } targets[3] = {
-        { "GetIO",     sigGetIO, (void*)ImGui_GetIO,  nullptr },
-        { "NewFrame",  sigNewFrame, (void*)ImGui_NewFrame, nullptr },
-        { "Render",    sigRender, (void*)ImGui_Render,   nullptr },
+    struct { const char* name; BYTE* sig; void* detour; void** orig; } targets[4] = {
+        { "GetIO",         sigGetIO,   (void*)ImGui_GetIO,      nullptr },
+        { "NewFrame",      sigNewFrame,(void*)ImGui_NewFrame,   nullptr },
+        { "Render",        sigRender,  (void*)ImGui_Render,     nullptr },
+        { "CreateContext", sigCreate,  (void*)Hook_CreateContext, nullptr },
     };
 
     // First: try exact sig match inside this module
-    for (int i=0;i<3;++i){
+    for (int i=0;i<4;++i){
         for (BYTE* cur=beg; cur<end-8; ++cur){
             if (memcmp(cur, targets[i].sig, 8)==0){
                 foundAddrs[i]=cur;
@@ -426,13 +428,32 @@ void PatchImGuiInModule(HMODULE module, bool captureOriginal)
         // Render prologue simple 8-byte sig only; already attempted above.
     }
 
+    // Fallback patterns for CreateContext
+    if(!foundAddrs[3]){
+        // Patterns for ImGui::CreateContext (common prologues across versions)
+        const BYTE patCreate1[] = { 0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20 };                // push regs / sub rsp,20h
+        const char maskCreate1[] = "xxxxxxxxxx";
+        const BYTE patCreate2[] = { 0x48,0x8B,0xC4,0x53,0x48,0x81,0xEC,0,0,0,0,0x48,0x8B,0xD9 };       // preamble with stack frame
+        const char maskCreate2[] = "xxxxxxx????xxx";
+        const BYTE patCreate3[] = { 0x48,0x89,0x4C,0x24,0x18,0x55,0x56,0x57,0x41,0x54 };               // some older builds
+        const char maskCreate3[] = "xxxxxxxxxx";
+
+        void* found = FindPattern(beg,end,patCreate1,maskCreate1,sizeof(patCreate1));
+        if(!found) found = FindPattern(beg,end,patCreate2,maskCreate2,sizeof(patCreate2));
+        if(!found) found = FindPattern(beg,end,patCreate3,maskCreate3,sizeof(patCreate3));
+        if(found) {
+            foundAddrs[3]=found;
+            LogMessage("Fallback: Found ImGui::CreateContext at %p\n", found);
+        }
+    }
+
     // Obtain DLL path for logging
     char modulePath[MAX_PATH] = {0};
     GetModuleFileNameA(module, modulePath, MAX_PATH);
     LogMessage("PatchImGuiInModule: Target DLL = %s (%p) captureOriginal=%d\n", modulePath, module, captureOriginal);
 
     // Log resolved addresses before detouring
-    for(int i=0;i<3;++i){
+    for(int i=0;i<4;++i){
         if(foundAddrs[i]){
             LogMessage("PatchImGuiInModule: %s – ImGui::%s at %p\n", modulePath, targets[i].name, foundAddrs[i]);
         }
@@ -463,6 +484,14 @@ void PatchImGuiInModule(HMODULE module, bool captureOriginal)
         if(captureOriginal) g_SERender = (SE_Render_Fn)localOrig;
         ++hooked;
         LogMessage("Detours: Hooked ImGui_Render in %s\n", modulePath);
+    }
+
+    // Hook CreateContext if present (no original capture needed here)
+    if(foundAddrs[3]){
+        localOrig=foundAddrs[3];
+        DetourAttach(&(PVOID&)localOrig,(PVOID)Hook_CreateContext);
+        ++hooked;
+        LogMessage("Detours: Hooked ImGui_CreateContext in %s\n", modulePath);
     }
     err = DetourTransactionCommit();
     LogMessage("PatchImGuiInModule: %s (%p) – hooked=%d, result=%ld, captureOriginal=%d\n", modulePath, module, hooked, err, captureOriginal);
