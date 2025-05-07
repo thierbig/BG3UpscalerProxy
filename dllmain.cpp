@@ -23,7 +23,8 @@ const char* UPSCALER_SUCCESS_STRINGS[] = {
     "DX11WrapperForDX12 Resource Created"
 };
 const char* DLSS_SUCCESS_STRING = "NVSDK_NGX_D3D12_CreateFeature: Succeeded.";
-     
+     // Global to store addresses of ImGui functions in version.dll (or other)
+static void* g_versionAddrs[4] = { nullptr, nullptr, nullptr, nullptr };
 HMODULE g_scriptExtenderDll = NULL;
 
 std::ofstream g_logFile;
@@ -131,8 +132,10 @@ extern "C" __declspec(dllexport) void ImGui_Render()
 //  3)  Combined patcher – sig scan first, inline-JMP fall-back
 // ──────────────────────────────────────────────────────────────────────────────
 
-// Forward declaration for patching ImGui in other modules
+// Forward declarations
 void PatchImGuiInModule(HMODULE module, bool captureOriginal);
+static bool BakeOutImGuiFile(const char* path, BYTE* moduleBase, void* addrs[4]);
+static bool BakeOutImGuiCopy(HMODULE module, const char* destPath, void* addrsOverride[4]);
 
 // Helper: naive pattern scan with mask (x = match, ? = wildcard)
 static BYTE* FindPattern(BYTE* begin, BYTE* end, const BYTE* pattern, const char* mask, size_t len)
@@ -257,7 +260,7 @@ void PatchSEImGuiCalls()
                                     if (!foundAddrs[0]) {
                                         // Pattern 5 – minimal stub: mov rax,[rip+disp]; ret
                                         const BYTE patGetIO5[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0xC3 };
-                                        const char maskGetIO5[] = "xxx????xx";
+                                        const char maskGetIO5[] = "xxx????x""x"; // eight bytes pattern -> xx???xx?? actually need 8 char; simplifying
                                         foundAddrs[0] = FindPattern(beg, end, patGetIO5, maskGetIO5, sizeof(patGetIO5));
                                         if (foundAddrs[0]) LogMessage("Alt5: Found SE ImGui::GetIO at %p\n", foundAddrs[0]);
                                     }
@@ -295,50 +298,35 @@ void PatchSEImGuiCalls()
             }
         }
     }
-
-    // Use Detours to hook any found functions
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    int hooked = 0;
-    static void* origGetIO = nullptr;
-    static void* origNewFrame = nullptr;
-    static void* origRender = nullptr;
-
-    if (foundAddrs[0]) {
-        origGetIO = foundAddrs[0];
-        DetourAttach(&(PVOID&)origGetIO, (PVOID)ImGui_GetIO);
-        g_SEGetIO = (SE_GetIO_Fn)origGetIO; // trampoline to original
-        LogMessage("Detours: Hooked SE ImGui_GetIO\n");
-        ++hooked;
-    }
-    if (foundAddrs[1]) {
-        origNewFrame = foundAddrs[1];
-        DetourAttach(&(PVOID&)origNewFrame, (PVOID)ImGui_NewFrame);
-        g_SENewFrame = (SE_NewFrame_Fn)origNewFrame;
-        LogMessage("Detours: Hooked SE ImGui_NewFrame\n");
-        ++hooked;
-    }
-    if (foundAddrs[2]) {
-        origRender = foundAddrs[2];
-        DetourAttach(&(PVOID&)origRender, (PVOID)ImGui_Render);
-        g_SERender = (SE_Render_Fn)origRender;
-        LogMessage("Detours: Hooked SE ImGui_Render\n");
-        ++hooked;
-    }
-    LONG err = DetourTransactionCommit();
-    LogMessage("Detours: ImGui patching complete (hooked=%d, result=%ld)\n", hooked, err);
-
-    // ------------------------------------------------------------------
-    // Also patch ImGui copies that reside in other DLLs (e.g. version.dll)
-    // We only need to attach detours; we *do not* capture their originals.
-    // ------------------------------------------------------------------
+    // Also scan ImGui copies that reside in other DLLs (e.g. version.dll) without patching them
     HMODULE verDll = GetModuleHandleA("version.dll");
     if (verDll && verDll != g_scriptExtenderDll) {
         char verPath[MAX_PATH] = {0};
         GetModuleFileNameA(verDll, verPath, MAX_PATH);
-        LogMessage("Attempting to patch ImGui functions in %s ...\n", verPath);
-        PatchImGuiInModule(verDll, /*captureOriginal=*/false);
+        LogMessage("Scanning ImGui functions in %s ...\n", verPath);
+        PatchImGuiInModule(verDll, /*captureOriginal=*/true); // true => scan only, no BakeOut
+
+        // Create patched copy
+        char verTempPath[MAX_PATH];
+        strcpy_s(verTempPath, verPath);
+        char* dot = strrchr(verTempPath, '.');
+        if (dot)
+            strcpy_s(dot, MAX_PATH - (dot - verTempPath), "_temp.dll");
+        else
+            strcat_s(verTempPath, "_temp.dll");
+
+        if (BakeOutImGuiCopy(verDll, verTempPath, g_versionAddrs))
+            LogMessage("BakeOutImGuiCopy: Patched copy saved as %s\n", verTempPath);
+        else
+            LogMessage("BakeOutImGuiCopy: No patches written to %s\n", verTempPath);
     }
+    // Permanently disable duplicate ImGui implementations inside Script Extender DL
+    //char sePath[MAX_PATH] = {};
+    //GetModuleFileNameA(g_scriptExtenderDll, sePath, MAX_PATH);
+    //if (BakeOutImGuiFile(sePath, (BYTE*)g_scriptExtenderDll, foundAddrs))
+        //LogMessage("BakeOutImGuiFile: Patched Script Extender ImGui functions on disk (%s)\n", sePath);
+    //else
+        //LogMessage("BakeOutImGuiFile: No ImGui functions patched for %s\n", sePath);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -359,21 +347,21 @@ void PatchImGuiInModule(HMODULE module, bool captureOriginal)
     void* foundAddrs[4] = { nullptr, nullptr, nullptr, nullptr };
 
     // Patterns (re-use definitions from PatchSEImGuiCalls)
-    const BYTE patGetIO[]  = { 0x48, 0x8B, 0x0D, 0,0,0,0, 0x48, 0x8B, 0x41, 0x38 };
+    const BYTE patGetIO[] = { 0x48, 0x8B, 0x0D, 0,0,0,0, 0x48, 0x8B, 0x41, 0x38 };
     const char maskGetIO[] = "xxx????xxxx";
-    const BYTE patNewFrame[]  = { 0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20,0x48,0x8B,0x35,0,0,0,0,0x48,0x8B,0xF9 };
+    const BYTE patNewFrame[] = { 0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20,0x48,0x8B,0x35,0,0,0,0,0x48,0x8B,0xF9 };
     const char maskNewFrame[] = "xxxxxxxxxxxxx????xxx";
-    const BYTE patGetIO2[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x83, 0xC0, 0x08, 0xC3 };
+    const BYTE patGetIO2[] = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x83, 0xC0, 0x08, 0xC3 };
     const char maskGetIO2[] = "xxx????xxxxx";
     const BYTE patNewFrame2[] = { 0x48, 0x8B, 0xC4, 0x53, 0x55, 0x57, 0x48, 0x81, 0xEC, 0,0,0,0, 0x48, 0x8B, 0x2D, 0,0,0,0 };
     const char maskNewFrame2[] = "xxxxxxxxx????xxx????";
-    const BYTE patGetIO3[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x8B, 0x40, 0x38 };
+    const BYTE patGetIO3[] = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x8B, 0x40, 0x38 };
     const char maskGetIO3[] = "xxx????xxxx";
     const BYTE patNewFrame3[] = { 0x48,0x89,0x5C,0x24,0,0x57,0x48,0x83,0xEC,0,0x48,0x8B,0x05 };
     const char maskNewFrame3[] = "xxxx?xxxx?xxx";
-    const BYTE patGetIO4[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x83, 0xC0, 0x08, 0 };
+    const BYTE patGetIO4[] = { 0x48, 0x8B, 0x05, 0,0,0,0, 0x48, 0x83, 0xC0, 0x08, 0 };
     const char maskGetIO4[] = "xxx????xxxxx?";
-    const BYTE patGetIO5[]  = { 0x48, 0x8B, 0x05, 0,0,0,0, 0xC3 };
+    const BYTE patGetIO5[] = { 0x48, 0x8B, 0x05, 0,0,0,0, 0xC3 };
     const char maskGetIO5[] = "xxx????x""x"; // eight bytes pattern -> xx???xx?? actually need 8 char; simplifying
 
     // reuse original eight-byte prologues from local ImGui funcs (optional)
@@ -459,42 +447,144 @@ void PatchImGuiInModule(HMODULE module, bool captureOriginal)
         }
     }
 
-    // Attach detours for any found functions (do not capture originals unless asked)
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    int hooked=0; LONG err;
-    void* localOrig;
-    if(foundAddrs[0]){
-        localOrig=foundAddrs[0];
-        DetourAttach(&(PVOID&)localOrig,(PVOID)ImGui_GetIO);
-        if(captureOriginal) g_SEGetIO = (SE_GetIO_Fn)localOrig;
-        ++hooked;
-        LogMessage("Detours: Hooked ImGui_GetIO in %s\n", modulePath);
-    }
-    if(foundAddrs[1]){
-        localOrig=foundAddrs[1];
-        DetourAttach(&(PVOID&)localOrig,(PVOID)ImGui_NewFrame);
-        if(captureOriginal) g_SENewFrame = (SE_NewFrame_Fn)localOrig;
-        ++hooked;
-        LogMessage("Detours: Hooked ImGui_NewFrame in %s\n", modulePath);
-    }
-    if(foundAddrs[2]){
-        localOrig=foundAddrs[2];
-        DetourAttach(&(PVOID&)localOrig,(PVOID)ImGui_Render);
-        if(captureOriginal) g_SERender = (SE_Render_Fn)localOrig;
-        ++hooked;
-        LogMessage("Detours: Hooked ImGui_Render in %s\n", modulePath);
+    // Permanently patch this DLL on disk (skip for Script Extender, handled above)
+    if (!captureOriginal) {
+        if (BakeOutImGuiFile(modulePath, (BYTE*)module, foundAddrs))
+            LogMessage("BakeOutImGuiFile: Patched ImGui functions in %s on disk\n", modulePath);
+        else
+            LogMessage("BakeOutImGuiFile: No ImGui functions patched for %s\n", modulePath);
     }
 
-    // Hook CreateContext if present (no original capture needed here)
-    if(foundAddrs[3]){
-        localOrig=foundAddrs[3];
-        DetourAttach(&(PVOID&)localOrig,(PVOID)Hook_CreateContext);
-        ++hooked;
-        LogMessage("Detours: Hooked ImGui_CreateContext in %s\n", modulePath);
+    // Store addresses globally if caller requested captureOriginal (used for later baking)
+    if (captureOriginal) {
+        memcpy(g_versionAddrs, foundAddrs, sizeof(foundAddrs));
     }
-    err = DetourTransactionCommit();
-    LogMessage("PatchImGuiInModule: %s (%p) – hooked=%d, result=%ld, captureOriginal=%d\n", modulePath, module, hooked, err, captureOriginal);
+
+    // No runtime hooks attached anymore.
+    LogMessage("PatchImGuiInModule: %s (%p) – addresses processed, captureOriginal=%d\n", modulePath, module, captureOriginal);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  Permanently patch a DLL so specified functions start with "ret"+nops.
+//  This disables duplicate ImGui implementations without needing runtime detours.
+// ──────────────────────────────────────────────────────────────────────────────
+static bool BakeOutImGuiFile(const char* path, BYTE* moduleBase, void* addrs[4])
+{
+    // Create backup once
+    char backup[MAX_PATH];
+    sprintf_s(backup, "%s.orig", path);
+    CopyFileA(path, backup, FALSE);
+
+    HANDLE hFile = CreateFileA(path, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    HANDLE hMap = CreateFileMappingA(hFile, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    if (!hMap) { CloseHandle(hFile); return false; }
+
+    BYTE* fileMem = (BYTE*)MapViewOfFile(hMap, FILE_MAP_WRITE, 0, 0, 0);
+    if (!fileMem) { CloseHandle(hMap); CloseHandle(hFile); return false; }
+
+    auto dos = (IMAGE_DOS_HEADER*)fileMem;
+    auto nt  = (IMAGE_NT_HEADERS*)(fileMem + dos->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    WORD nSec = nt->FileHeader.NumberOfSections;
+
+    auto RvaToOff = [&](DWORD rva)->DWORD {
+        for (WORD i = 0; i < nSec; ++i) {
+            DWORD va = sec[i].VirtualAddress;
+            DWORD raw = sec[i].PointerToRawData;
+            DWORD vsz = sec[i].Misc.VirtualSize;
+            DWORD rsz = sec[i].SizeOfRawData;
+            DWORD maxSize = (vsz > rsz && vsz != 0) ? vsz : rsz; // use larger of sizes
+            if (rva >= va && rva < va + maxSize)
+                return raw + (rva - va);
+        }
+        return 0u;
+    };
+
+    BYTE stub[8] = { 0x33, 0xC0, 0xC3, 0x90, 0x90, 0x90, 0x90, 0x90 }; // xor eax,eax; ret; nop *5
+
+    bool patched = false;
+    for (int i = 0; i < 4; ++i) {
+        if (!addrs[i]) continue;
+        DWORD rva = (DWORD)((BYTE*)addrs[i] - moduleBase);
+        DWORD off = RvaToOff(rva);
+        if (!off) {
+            LogMessage("BakeOutImGuiFile: RVA %08X for idx %d did not map to file offset – section too small?\n", rva, i);
+        }
+        if (off) { memcpy(fileMem + off, stub, sizeof(stub)); patched = true; }
+    }
+
+    FlushViewOfFile(fileMem, 0);
+    UnmapViewOfFile(fileMem);
+    CloseHandle(hMap);
+    CloseHandle(hFile);
+    return patched;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  Bake out ImGui functions by copying a loaded module to a new file, then
+//  patching that copy so functions do nothing (return 0). Returns true if any
+//  byte patched in the copy.
+// ──────────────────────────────────────────────────────────────────────────────
+static bool BakeOutImGuiCopy(HMODULE module, const char* destPath, void* addrsOverride[4])
+{
+    char srcPath[MAX_PATH] = {};
+    GetModuleFileNameA(module, srcPath, MAX_PATH);
+
+    // Copy file (overwrite if already exists)
+    if (!CopyFileA(srcPath, destPath, FALSE)) {
+        DWORD err = GetLastError();
+        LogMessage("BakeOutImGuiCopy: CopyFile failed (%lu) from %s to %s\n", err, srcPath, destPath);
+    }
+
+    MODULEINFO mi{};
+    if (!GetModuleInformation(GetCurrentProcess(), module, &mi, sizeof(mi)))
+        return false;
+
+    BYTE* base = (BYTE*)mi.lpBaseOfDll;
+    BYTE* beg  = base;
+    BYTE* end  = base + mi.SizeOfImage;
+
+    void* addrs[4] = {nullptr};
+
+    if (addrsOverride) {
+        memcpy(addrs, addrsOverride, sizeof(addrs));
+    }
+
+    // Simple reuse: scan using the same patterns as PatchImGuiInModule
+    if (!addrs[0] || !addrs[1] || !addrs[2] || !addrs[3]) {
+        const BYTE patGetIO[]   = { 0x48,0x8B,0x05,0,0,0,0,0x48,0x8B,0x40,0x38 };
+        const char maskGetIO[]  = "xxx????xxxx";
+        const BYTE patNewFrame[] = { 0x48,0x8B,0xC4,0x53,0x55,0x57,0x48,0x81,0xEC,0,0,0,0,0x41,0x8B };
+        const char maskNewFrame[] = "xxxxxxxxx????xx";
+        const BYTE patRender[]  = { 0x41,0x57,0x48,0x83,0xEC,0x60,0x48,0x8B,0x05 };
+        const char maskRender[] = "xxxxxxxxx";
+
+        if(!addrs[0]) addrs[0] = FindPattern(beg,end,patGetIO,maskGetIO,sizeof(patGetIO));
+        if(!addrs[1]) addrs[1] = FindPattern(beg,end,patNewFrame,maskNewFrame,sizeof(patNewFrame));
+        if(!addrs[2]) addrs[2] = FindPattern(beg,end,patRender,maskRender,sizeof(patRender));
+
+        // Fallback patterns for ImGui::CreateContext
+        if (!addrs[3]) {
+            const BYTE patCreate1[] = { 0x48,0x89,0x5C,0x24,0x08,0x57,0x48,0x83,0xEC,0x20 };
+            const char maskCreate1[] = "xxxxxxxxxx";
+            const BYTE patCreate2[] = { 0x48,0x8B,0xC4,0x53,0x48,0x81,0xEC,0,0,0,0,0x48,0x8B,0xD9 };
+            const char maskCreate2[] = "xxxxxxx????xxx";
+            const BYTE patCreate3[] = { 0x48,0x89,0x4C,0x24,0x18,0x55,0x56,0x57,0x41,0x54 };
+            const char maskCreate3[] = "xxxxxxxxxx";
+
+            addrs[3] = FindPattern(beg,end,patCreate1,maskCreate1,sizeof(patCreate1));
+            if (!addrs[3]) addrs[3] = FindPattern(beg,end,patCreate2,maskCreate2,sizeof(patCreate2));
+            if (!addrs[3]) addrs[3] = FindPattern(beg,end,patCreate3,maskCreate3,sizeof(patCreate3));
+        }
+    }
+
+    LogMessage("BakeOutImGuiCopy: Scanned %s -> GetIO=%p, NewFrame=%p, Render=%p, CreateCtx=%p\n",
+               srcPath, addrs[0], addrs[1], addrs[2], addrs[3]);
+
+    return BakeOutImGuiFile(destPath, base, addrs);
 }
 
 std::wstring GetDllDirectory()
