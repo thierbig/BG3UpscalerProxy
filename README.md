@@ -13,7 +13,8 @@ A modified Script Extender that enables compatibility with DLSS FG from PureDark
 ## Screenshots
 
 ### Mod Configuration Menu (requires Script Extender) Working with Upscaler(top-left corner)
-![MCM Working](https://i.imgur.com/yFvsLKO.png)
+![MCM Working](<img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/ea7529c4-2a71-478a-bf79-af42d57c01fe" />
+)
 
 ## Features
 
@@ -33,7 +34,7 @@ A modified Script Extender that enables compatibility with DLSS FG from PureDark
 1. Purchase and activate DLSS FG from [PureDark's Patreon](https://www.patreon.com/posts/bg3-upscaler-fg-89557958)
 3. **Rename** PureDark's DLSS FG `version.dll` to `upscaler.dll` in your Baldur's Gate 3 bin folde
 4. **Copy** the `BG3ScriptExtender.dll` from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases) to folder containing the latest version folder of Script Extender (i.e `C:\Users\User\AppData\Local\BG3ScriptExtender\ScriptExtender\27....` (highest number is good number)
-5. **Replace** PureDark's `mods` folder with the one from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases)
+5. **Replace** PureDark's `Streamline` folder with the one from [the releases page](https://github.com/thierbig/bg3upscalerproxy/releases/latest)
 
 
 **Important:** 
