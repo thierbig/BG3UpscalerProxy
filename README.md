@@ -13,8 +13,7 @@ A modified Script Extender that enables compatibility with DLSS FG from PureDark
 ## Screenshots
 
 ### Mod Configuration Menu (requires Script Extender) Working with Upscaler(top-left corner)
-![MCM Working](<img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/ea7529c4-2a71-478a-bf79-af42d57c01fe" />
-)
+<img width="2559" height="1439" alt="image" src="https://github.com/user-attachments/assets/ea7529c4-2a71-478a-bf79-af42d57c01fe" />
 
 ## Features
 
