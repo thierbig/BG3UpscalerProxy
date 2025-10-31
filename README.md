@@ -4,7 +4,7 @@
 
 ## Latest Version DLSS FG ONLY
 
-**[Download .dll from link and follow readme here](https://github.com/thierbig/bg3upscalerproxy/releases/latest)**
+**[Download .dll from link and follow readme here below](https://github.com/thierbig/bg3upscalerproxy/releases/latest)**
 
 ## Overview
 
