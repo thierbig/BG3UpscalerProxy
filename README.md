@@ -58,7 +58,7 @@ FOLLOW THE README ON LINK: [https://github.com/thierbig/BG3UpscalerProxy/release
 
 ## Build
 
-Auto builds BG3ScriptExtender.dll from my fork: [https://github.com/thierbig/bg3se-upscaler](https://github.com/thierbig/bg3se-upscaler)
+Auto builds BG3ScriptExtender.dll from my SE fork: [https://github.com/thierbig/bg3se-upscaler](https://github.com/thierbig/bg3se-upscaler)
 
 ## License
 
