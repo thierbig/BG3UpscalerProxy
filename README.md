@@ -56,7 +56,10 @@ FOLLOW THE README ON LINK: [https://github.com/thierbig/BG3UpscalerProxy/release
 - Original upscaler injection by [PureDark](https://www.patreon.com/pureDark)
 - Script Extender by [Norbyte](https://github.com/Norbyte/bg3se)
 
-## Auto builds BG3ScriptExtender.dll from my fork: [https://github.com/thierbig/bg3se-upscaler](https://github.com/thierbig/bg3se-upscaler)
+## Build
+
+Auto builds BG3ScriptExtender.dll from my fork: [https://github.com/thierbig/bg3se-upscaler](https://github.com/thierbig/bg3se-upscaler)
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
