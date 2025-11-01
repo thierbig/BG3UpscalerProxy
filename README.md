@@ -56,9 +56,9 @@ FOLLOW THE README ON LINK: [https://github.com/thierbig/BG3UpscalerProxy/release
 - Original upscaler injection by [PureDark](https://www.patreon.com/pureDark)
 - Script Extender by [Norbyte](https://github.com/Norbyte/bg3se)
 
-## Build
+## Codebase
 
-Auto builds BG3ScriptExtender.dll from my SE fork: [https://github.com/thierbig/bg3se-upscaler](https://github.com/thierbig/bg3se-upscaler)
+Code hosted on this repo corresponds to release older 3.0. Release 4.0 auto builds BG3ScriptExtender.dll from my SE fork: [https://github.com/thierbig/bg3se-upscaler](https://github.com/thierbig/bg3se-upscaler).
 
 ## License
 
