@@ -27,6 +27,7 @@ A modified Script Extender that enables compatibility with DLSS FG from PureDark
 - You need the [BG3 Script Extender](https://github.com/Norbyte/bg3se) installed and used once
 - This only works with Baldur's Gate 3 on PC
 - Use Vulkan
+**- Enable VSync in BG3 Video settings**
 
 ## Installation
 
