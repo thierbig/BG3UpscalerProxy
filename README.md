@@ -43,6 +43,83 @@ A modified Script Extender that enables compatibility with DLSS FG from PureDark
 
 **Note:** You still need to purchase PureDark's plugin for authentication.
 
+## Authentication
+
+Frame generation is the paid part of PureDark's mod and is gated behind a subscriber
+authentication check. Upscaling works without it; frame generation silently does nothing.
+
+The most reliable way to authenticate is to run PureDark's standalone auth tool
+(`patreon.exe`), which is posted in the `#upscaler-support` area of
+[PureDark's Discord](https://www.patreon.com/pureDark) and is available to active
+subscribers. It is not redistributed here — get it from PureDark directly. Run it once
+before launching the game; it authenticates your Patreon session, after which the mod
+unlocks frame generation on subsequent launches.
+
+The relevant settings live in `bin\mods\BG3Upscaler.ini`:
+
+```ini
+[Frame Generation]
+mDLSSGMode = 2       # 0 = Off, 1 = On, 2 = Auto
+mDLSSGFrames = 4     # multi-frame generation: x2 / x3 / x4
+mDLSSGEnabled = true # must be true
+
+[Hotkeys]
+mToggleFrameGen = 624  # 624 = Numpad *, toggles FG in-game
+```
+
+## Troubleshooting
+
+### Frame generation never engages
+
+The failure is completely silent, so use `bin\mods\BG3Upscaler.log` rather than guessing.
+A working run creates **two** NGX features:
+
+```
+hk_NVSDK_NGX_VULKAN_CreateFeature FeatureID 1     <- DLSS upscaling
+hk_NVSDK_NGX_VULKAN_CreateFeature FeatureID <n>   <- frame generation
+```
+
+If you only ever see `FeatureID 1`, frame generation is not running. Note that
+`DLSS-G is supported on this system` appears either way — that line only reports hardware
+capability, not that FG is active.
+
+Work through these in order:
+
+1. **Is the plugin actually installed?** `bin\mods\UpscalerBasePlugin\` must contain
+   PureDark's plugin binary *alongside* the `Streamline\` subfolder. A partial install
+   where only `Streamline\` was copied leaves every Streamline DLL present and correct
+   while nothing drives them — the log will report DLSS-G as supported and then never
+   attempt it.
+2. **Are you authenticated?** See the Authentication section above.
+3. **Is FG enabled in the ini?** `mDLSSGEnabled = true`, and try `mDLSSGMode = 1`
+   (explicit On) rather than `2` (Auto), which can gate FG behind a framerate threshold.
+4. **Change one thing at a time.** If `BG3Upscaler.log` is byte-for-byte identical between
+   runs, whatever you changed is not reaching the mod — check the earlier steps rather than
+   changing more settings.
+
+### Where the NGX entry points actually live
+
+Code that hooks NGX commonly probes `sl.interposer.dll`, `nvngx_dlss.dll` and `nvngx.dll`.
+On a current BG3 + Streamline install that finds nothing. Verified locations:
+
+| Symbol | Actually exported by |
+|---|---|
+| `NVSDK_NGX_VULKAN_EvaluateFeature` | `_nvngx.dll` (leading underscore, driver store) |
+| `NVSDK_NGX_Parameter_GetVoidPointer` | `bg3.exe` (statically linked into the game) |
+
+Also note the game exports `NVSDK_NGX_VULKAN_EvaluateFeature` — not the `_C` suffixed
+variant. Enumerating loaded modules and binding to whichever exports the symbol is more
+durable than a hardcoded name list.
+
+### Streamline lives in a subfolder
+
+PureDark ships Streamline at `bin\mods\UpscalerBasePlugin\Streamline\`, which is **not** on
+the DLL search path. `LoadLibraryW(L"sl.interposer.dll")` by bare name therefore fails, and
+any code depending on it silently falls back to the game's own Vulkan entry points,
+bypassing Streamline's swapchain proxy. `GetModuleHandleW` matches on base name regardless
+of folder, so resolving after Streamline is loaded — at `vkCreateDevice` time rather than at
+extender init — works from any location.
+
 ## Known Issues
 
 - **MCM Menu Flickering**: The Mod Configuration Menu will flicker and will be harder than usual to use
