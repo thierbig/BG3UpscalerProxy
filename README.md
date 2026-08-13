@@ -97,29 +97,6 @@ Work through these in order:
    runs, whatever you changed is not reaching the mod — check the earlier steps rather than
    changing more settings.
 
-### Where the NGX entry points actually live
-
-Code that hooks NGX commonly probes `sl.interposer.dll`, `nvngx_dlss.dll` and `nvngx.dll`.
-On a current BG3 + Streamline install that finds nothing. Verified locations:
-
-| Symbol | Actually exported by |
-|---|---|
-| `NVSDK_NGX_VULKAN_EvaluateFeature` | `_nvngx.dll` (leading underscore, driver store) |
-| `NVSDK_NGX_Parameter_GetVoidPointer` | `bg3.exe` (statically linked into the game) |
-
-Also note the game exports `NVSDK_NGX_VULKAN_EvaluateFeature` — not the `_C` suffixed
-variant. Enumerating loaded modules and binding to whichever exports the symbol is more
-durable than a hardcoded name list.
-
-### Streamline lives in a subfolder
-
-PureDark ships Streamline at `bin\mods\UpscalerBasePlugin\Streamline\`, which is **not** on
-the DLL search path. `LoadLibraryW(L"sl.interposer.dll")` by bare name therefore fails, and
-any code depending on it silently falls back to the game's own Vulkan entry points,
-bypassing Streamline's swapchain proxy. `GetModuleHandleW` matches on base name regardless
-of folder, so resolving after Streamline is loaded — at `vkCreateDevice` time rather than at
-extender init — works from any location.
-
 ## Known Issues
 
 - **MCM Menu Flickering**: The Mod Configuration Menu will flicker and will be harder than usual to use
